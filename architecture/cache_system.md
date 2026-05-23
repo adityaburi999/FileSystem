@@ -1,51 +1,36 @@
-# CACHE SYSTEM (RAM/SSD + INVALIDATION)
+# CACHE SYSTEM
 
-## TIERS
-L1 RAM cache (hot chunks + metadata)
-L2 SSD cache (warm chunks)
-L3 object store (cold source)
+## STRUCTURE
+- L1 RAM Cache
+- L2 SSD Cache
+- Metadata Cache
+- Eviction Manager
+- Invalidation Bus
 
-## READ FLOW WITH CACHE
-request chunk
-  ↓
-L1 hit? return
-  ↓ miss
-L2 hit? promote to L1 + return
-  ↓ miss
-fetch from object store
-  ↓
-verify hash
-  ↓
-insert L2 + L1
-  ↓
-return bytes
+## FLOW
+- Read chunk request
+- Query L1 cache
+- L1 miss -> query L2 cache
+- L2 miss -> fetch object store chunk
+- Verify chunk hash
+- Insert into L2 and promote to L1
+- Return bytes
+- Commit/delete/recovery events -> invalidate affected keys
 
-## EVICTION
-- LRU/LFU hybrid
-- memory pressure -> evict coldest entries
-- metadata and chunk caches tracked separately
+## RULES
+- Cache cannot override metadata truth.
+- Cache fill on read path only.
+- Invalidation required on version change.
+- Integrity verification required before caching fetched chunk.
 
-## INVALIDATION EVENTS
-- metadata CAS commit -> invalidate old metadata cache
-- delete/tombstone -> invalidate path/meta entries
-- GC physical delete -> invalidate chunk cache
-- recovery complete -> optional full cache flush
+## FAILURES
+- Stale metadata cache -> version check + invalidate.
+- SSD cache corruption -> drop entry + refetch.
+- Memory pressure -> enforce eviction policy.
+- Invalidation delay -> serve only version-checked entries.
+- Cache stampede -> request coalescing.
 
-## WHAT CAN GO WRONG?
-1) Stale metadata cache causes old version read
-   -> version check + invalidate
-
-2) Cache pollution from large scan
-   -> protect frequently used entries (LFU bias)
-
-3) SSD cache corruption
-   -> hash verify on read detects bad entry
-   -> fallback to object store
-
-4) Memory exhaustion
-   -> aggressive eviction + backpressure
-
-## CACHE RULES
-- Cache never overrides metadata truth
-- Any integrity doubt -> bypass and reload
-- Correctness first, speed second
+## INVARIANTS
+- Cached data maps to committed version.
+- Unverified data is never cached.
+- Cache miss does not alter correctness.

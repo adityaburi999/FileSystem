@@ -1,59 +1,33 @@
-# SECURITY MODEL (INTEGRITY-FIRST)
+# SECURITY MODEL
 
-## SECURITY BASE
-- Immutable chunks
-- Versioned metadata
-- WAL traceability
-- Hash-based verification (BLAKE3)
+## STRUCTURE
+- Integrity Verifier
+- WAL Auditor
+- Metadata Version Guard
+- Delete Safety Guard
+- Quarantine Manager
 
-## THREATS CONSIDERED
-- silent corruption
-- partial writes after crash
-- stale or replayed metadata state
-- unsafe deletes causing data loss
+## FLOW
+- Write path -> staging -> WAL -> CAS commit
+- Read path -> fetch bytes -> hash verify -> serve
+- Delete path -> tombstone -> retention -> refcheck -> physical delete
+- Boot path -> WAL replay -> consistency check -> service enable
+- Integrity fault -> quarantine + alert
 
-## INTEGRITY FLOW
-read chunk
-  ↓
-verify checksum + BLAKE3
-  ↓ pass
-serve data
-  ↓ fail
-EIO + alert + quarantine path
+## RULES
+- No state mutation without WAL record.
+- No served data without integrity verification.
+- No physical delete without reference proof.
+- Version chain checks required on metadata updates.
 
-## WRITE SAFETY FLOW
-staging write
-  ↓
-WAL append
-  ↓
-CAS commit
-  ↓
-user-visible update
+## FAILURES
+- Hash mismatch -> reject data + quarantine object.
+- WAL inconsistency -> block mutable operations.
+- Metadata tamper signal -> force recovery scan.
+- Unauthorized mutation attempt -> deny + audit.
+- Integrity subsystem unavailable -> fail closed for unsafe ops.
 
-## DELETE SAFETY FLOW
-logical tombstone
-  ↓
-retention delay
-  ↓
-reference check
-  ↓
-physical delete
-
-## WHAT CAN GO WRONG?
-1) Direct disk tampering
-   -> hash mismatch detection
-
-2) WAL tamper/truncation
-   -> replay inconsistency alarm
-
-3) Unauthorized metadata edit
-   -> version/journal mismatch detection
-
-4) Root attacker
-   -> can still alter storage; detection possible, prevention limited
-
-## SECURITY RULES
-- Never trust raw disk bytes without verification
-- Never skip WAL on state-changing operation
-- Never bypass metadata authority
-- On integrity doubt, deny service of suspect data
+## INVARIANTS
+- Integrity checks gate visibility.
+- Audit trail exists for mutating actions.
+- Safety checks precede destructive actions.

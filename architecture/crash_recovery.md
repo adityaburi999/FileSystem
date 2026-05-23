@@ -1,54 +1,40 @@
-# CRASH RECOVERY (BOOT FLOW)
+# CRASH RECOVERY
 
-## BOOT RECOVERY FLOW
-System startup
-  ↓
-Load WAL segments
-  ↓
-Replay txn timeline
-  ↓
-Classify txns: committed / aborted / incomplete
-  ↓
-Validate committed metadata-chunk links
-  ↓
-Repair or rollback incomplete txns
-  ↓
-Rebuild/check metadata index if required
-  ↓
-Cleanup stale staging slots
-  ↓
-Trigger post-recovery orphan scan
-  ↓
-Activate FUSE only after consistency reached
+## STRUCTURE
+- WAL Loader
+- Transaction Classifier
+- Metadata Verifier
+- Staging Cleaner
+- Index Rebuilder
+- Mount Gate
 
-## TXN DECISION RULE
-- TxnCommit present -> committed
-- TxnAbort present -> aborted
-- Missing final marker -> incomplete -> repair/rollback logic
+## FLOW
+- Boot sequence starts
+- Load WAL segments
+- Replay events in order
+- Classify txn: committed/aborted/incomplete
+- Apply committed txns
+- Rollback incomplete txns
+- Verify metadata-chunk links
+- Cleanup stale staging slots
+- Rebuild index if required
+- Run post-replay consistency check
+- Open mount gate
 
-## WHAT CAN GO WRONG?
-1) WAL segment corruption
-   -> stop normal mount
-   -> attempt bounded salvage
-   -> require admin intervention if unresolved
+## RULES
+- Replay order is append order.
+- Incomplete txn is non-committed.
+- Mount blocked until consistency check passes.
+- Recovery actions must be idempotent.
 
-2) Metadata exists but chunk missing
-   -> mark object unhealthy
-   -> block reads to bad object
+## FAILURES
+- WAL corruption -> bounded salvage or fail mount.
+- Missing chunk for committed metadata -> quarantine object.
+- Staging cleanup failure -> reschedule cleanup job.
+- Index rebuild failure -> mount degraded/read-only.
+- Repeated txn replay fault -> quarantine txn record.
 
-3) Staging txn with no commit marker
-   -> discard staging
-   -> treat chunks as potential orphan
-
-4) Recovery loop repeatedly fails same txn
-   -> quarantine txn id
-   -> continue with safe subset
-
-5) Index corruption
-   -> rebuild from metadata graph
-
-## RECOVERY RULES
-- Never expose filesystem before replay completes
-- Prefer rollback over risky auto-repair
-- Preserve last known committed state
-- Log every recovery decision path
+## INVARIANTS
+- Recovery never invents a new committed state.
+- Visible state after boot is WAL-consistent.
+- Replay can be re-run without divergence.

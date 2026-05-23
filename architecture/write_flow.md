@@ -1,58 +1,45 @@
-# WRITE FLOW (STREAMING)
+# WRITE FLOW
+
+## STRUCTURE
+- FUSE Write Handler
+- Staging Manager
+- Stream Buffer
+- Chunk Engine
+- Object Store
+- WAL Engine
+- Metadata Engine
+- Cache Invalidation
 
 ## FLOW
-write("/a/b/file", data)
-  ↓
-FUSE receives blocks (4KB-128KB)
-  ↓
-Open staging txn slot
-  ↓
-Append to stream buffer
-  ↓ buffer >= chunk_size(4MB)
-Chunk data + compute BLAKE3
-  ↓
-Write chunk to object store
-  ↓
-Append chunk event to WAL
-  ↓ repeat until close/fsync
-Finalize last chunk
-  ↓
-Build new redirect metadata version
-  ↓
-CAS commit metadata
-  ↓
-WAL txn commit
-  ↓
-Invalidate/update cache
-  ↓
-Cleanup staging
+- write(path, bytes) -> FUSE
+- Begin staging transaction
+- Append bytes to stream buffer
+- Buffer threshold reached -> create chunk
+- Hash chunk -> chunk_id
+- Store chunk if absent
+- Append chunk event to WAL
+- Repeat until close/fsync
+- Finalize trailing chunk
+- Build new redirect metadata
+- CAS commit metadata
+- WAL commit transaction
+- Invalidate stale cache entries
+- Cleanup staging artifacts
 
-## DEDUP PATH
-Before chunk write:
-- if chunk_id exists -> skip physical write
-- still record reference in txn
+## RULES
+- No metadata commit without WAL durability.
+- CAS is required for commit.
+- User-visible state changes only after CAS success.
+- Dedup check does not skip WAL event.
 
-## WHAT CAN GO WRONG?
-1) Crash after chunk write before commit
-   -> chunk may exist orphaned
-   -> GC cleans later
+## FAILURES
+- Object store full -> ENOSPC + abort txn.
+- WAL append/fsync fail -> abort txn.
+- CAS conflict -> retry or return EBUSY.
+- Crash before commit -> recovery rollback.
+- Staging cleanup failure -> deferred cleanup on boot.
 
-2) WAL append/fsync fail
-   -> do not commit metadata
-   -> abort txn
-
-3) CAS conflict (parallel writer)
-   -> version mismatch
-   -> retry or return EBUSY
-
-4) Staging cleanup fails
-   -> recovered and removed on boot
-
-5) Object store full
-   -> ENOSPC
-   -> txn abort, no partial visibility
-
-## WRITE SAFETY RULES
-- No metadata commit without WAL durability
-- No user-visible update before CAS success
-- Last committed version remains visible on failure
+## INVARIANTS
+- Commit is atomic at metadata boundary.
+- Last committed version remains readable on failure.
+- Orphan chunks are non-visible.

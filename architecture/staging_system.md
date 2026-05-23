@@ -1,56 +1,37 @@
-# STAGING SYSTEM (TEMP WRITE AREA)
+# STAGING SYSTEM
 
-## PURPOSE
-Keep in-progress writes isolated
-Prevent partial user-visible file states
-
-## STAGING STRUCTURE
-/staging/txn_<id>/
-- buffer.tmp
-- chunks.tmp
-- redirect.tmp
-- txn_state
+## STRUCTURE
+- Transaction Slot Manager
+- Temp Buffer Store
+- Temp Chunk Map
+- Txn State Marker
+- Cleanup Worker
 
 ## FLOW
-open txn slot
-  ↓
-stream write blocks into buffer
-  ↓
-chunk + hash + persist chunk
-  ↓
-record chunk id in staging + WAL
-  ↓
-close/fsync triggers CAS metadata commit
-  ↓ success
-mark txn committed
-  ↓
-delete staging slot
+- Begin write transaction -> allocate staging slot
+- Stream incoming blocks to temp buffer
+- Chunk + hash + object store persist
+- Record chunk refs in staging state
+- Append WAL events
+- Commit path -> metadata CAS + WAL commit
+- Mark staging txn committed
+- Cleanup slot artifacts
+- Boot recovery -> purge stale uncommitted slots
 
-## ABORT FLOW
-error/conflict/crash
-  ↓
-txn not committed
-  ↓
-staging discarded on recovery
-  ↓
-orphan chunks handled by GC
+## RULES
+- Staging data is non-visible to users.
+- Commit truth = WAL + metadata CAS.
+- Uncommitted staging state is discardable.
+- Staging quota enforcement is mandatory.
 
-## WHAT CAN GO WRONG?
-1) Staging grows too large
-   -> enforce quota
-   -> return ENOSPC/backpressure
+## FAILURES
+- Staging quota exceeded -> ENOSPC/backpressure.
+- Crash before commit -> rollback via recovery.
+- Slot leak -> periodic stale-slot cleanup.
+- Concurrent txns same path -> CAS resolves winner.
+- Cleanup failure -> deferred cleanup queue.
 
-2) Crash during staging cleanup
-   -> replay detects committed txn
-   -> remove stale slot later
-
-3) Staging slot leaks
-   -> periodic stale txn scanner
-
-4) Two txns same file
-   -> CAS at commit resolves winner
-
-## STAGING RULES
-- Never expose staging paths to users
-- Never treat staging data as committed data
-- Commit truth is CAS + WAL, not tmp files
+## INVARIANTS
+- Uncommitted staging does not affect namespace.
+- Every committed txn has durable WAL evidence.
+- Staging cleanup is idempotent.

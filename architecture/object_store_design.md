@@ -1,57 +1,38 @@
-# OBJECT STORE DESIGN (CHUNKS + BLAKE3)
+# OBJECT STORE DESIGN
 
-## CHUNK FORMAT
-chunk_id = BLAKE3(chunk_bytes)
-Stored unit:
-- header (magic/version/size/hash)
-- data bytes
-- trailer (checksum)
+## STRUCTURE
+- Chunk Writer
+- Chunk Reader
+- Hash Verifier
+- Dedup Checker
+- Temp File Committer
+- Sharded Path Layout
 
-## DISK LAYOUT
-/objects/<p1>/<p2>/<full_hash>.chunk
-Example:
-/objects/ab/cd/abcd....chunk
+## FLOW
+- Receive chunk bytes
+- Compute BLAKE3 hash -> chunk_id
+- Check existing chunk path
+- Absent -> write temp chunk file
+- fsync temp file
+- Atomic rename to final chunk path
+- Read request -> locate chunk path
+- Read bytes -> verify hash
+- Return data on match
 
-## WRITE FLOW
-receive chunk
-  ↓
-compute BLAKE3
-  ↓
-check existing chunk (dedup)
-  ↓ if absent
-write temp file
-  ↓ fsync
-atomic rename to final chunk path
+## RULES
+- Chunk id equals content hash.
+- Existing chunk_id is immutable.
+- Finalization uses atomic rename.
+- Read path requires integrity verify.
 
-## READ FLOW
-locate chunk by hash path
-  ↓
-read bytes
-  ↓
-recompute BLAKE3
-  ↓ match?
-yes -> return
-no  -> EIO + integrity alert
+## FAILURES
+- Temp write interrupted -> cleanup temp artifacts.
+- Hash mismatch on read -> EIO + quarantine chunk.
+- Disk IO failure -> retry/backoff then fail.
+- Path shard overload -> rebalance shard policy.
+- Duplicate finalization race -> retain first valid chunk.
 
-## DEDUP RULES
-- Same hash => same content assumption
-- Store once, reference many times
-- Deletion only when refcount reaches zero
-
-## WHAT CAN GO WRONG?
-1) Partial temp file after crash
-   -> cleanup temp artifacts on boot/GC
-
-2) Hash collision (extremely unlikely)
-   -> optional secondary verify (size + checksum)
-
-3) Disk path shard imbalance
-   -> rebalance shard strategy if needed
-
-4) Silent bit rot
-   -> detected on hash verify during read/scrub
-
-## OBJECT STORE RULES
-- Immutable chunks only
-- No overwrite of existing chunk id
-- Always verify content on load path
+## INVARIANTS
+- Same chunk_id implies same bytes.
+- No in-place chunk mutation.
+- Invalid chunk is never served.

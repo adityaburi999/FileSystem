@@ -1,49 +1,38 @@
-# DELETE FLOW (LOGICAL -> PHYSICAL)
+# DELETE FLOW
+
+## STRUCTURE
+- FUSE Delete Handler
+- Path Resolver
+- Metadata Engine
+- WAL Engine
+- Namespace Index
+- GC Trigger
 
 ## FLOW
-unlink("/a/b/file")
-  ↓
-FUSE receives delete request
-  ↓
-Resolve path -> object_id
-  ↓
-CAS update metadata state = TOMBSTONE
-  ↓
-Append delete event to WAL
-  ↓
-Remove name from live directory namespace
-  ↓
-Invalidate metadata cache
-  ↓
-Trigger GC candidate scan (async)
-  ↓
-Later: GC verifies unreferenced chunks
-  ↓
-Physical chunk delete
+- unlink(path) -> FUSE
+- Resolve path -> object_id
+- CAS set metadata state = TOMBSTONE
+- Append delete event to WAL
+- Remove namespace entry
+- Invalidate path/metadata cache
+- Enqueue GC candidate scan
+- GC validates references
+- GC physically deletes safe orphans
 
-## LOGICAL DELETE EFFECT
-- File disappears immediately from user namespace
-- Data/chunks remain until safe GC window passes
+## RULES
+- Delete is logical before physical.
+- Tombstone write requires CAS.
+- Physical delete requires no live reference.
+- Namespace visibility follows tombstone state.
 
-## WHAT CAN GO WRONG?
-1) Delete request on missing file
-   -> ENOENT
+## FAILURES
+- Path missing -> ENOENT.
+- CAS conflict -> retry with latest version.
+- WAL failure -> abort delete transaction.
+- Namespace update failure -> recovery replay repair.
+- Shared chunk candidate -> skip physical delete.
 
-2) CAS conflict while deleting
-   -> retry with latest version
-   -> if changed, re-evaluate delete
-
-3) Crash after tombstone before namespace cleanup
-   -> replay WAL
-   -> cleanup stale path entry on recovery
-
-4) GC tries deleting shared chunk
-   -> refcount check prevents deletion
-
-5) Delete of non-empty directory
-   -> ENOTEMPTY (or recursive flow if enabled)
-
-## DELETE SAFETY RULES
-- Never physical-delete before reference proof
-- Tombstone is source of delete truth
-- If uncertainty exists, keep data and defer GC
+## INVARIANTS
+- Tombstoned object is not user-visible.
+- Live-referenced chunk is never deleted.
+- Delete replay is idempotent.

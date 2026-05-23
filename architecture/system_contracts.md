@@ -1,64 +1,39 @@
-# SYSTEM CONTRACTS (GLOBAL RULES)
+# SYSTEM CONTRACTS
 
-These rules are mandatory for all modules.
+## STRUCTURE
+- Mutation Contracts
+- Visibility Contracts
+- Integrity Contracts
+- Deletion Contracts
+- Recovery Contracts
 
-## CONTRACT 1
-No in-place overwrite of committed data.
+## FLOW
+- Receive operation request
+- Validate preconditions
+- Execute operation steps
+- Validate postconditions
+- Commit state
+- Emit audit record
+- Reject operation on any contract failure
 
-## CONTRACT 2
-All metadata mutations use CAS.
+## RULES
+- Contract C1: no in-place committed overwrite.
+- Contract C2: all metadata mutations require CAS.
+- Contract C3: all mutating operations require WAL.
+- Contract C4: no partial state exposure.
+- Contract C5: chunk_id must match BLAKE3(content).
+- Contract C6: metadata is source of truth.
+- Contract C7: delete is logical before physical.
+- Contract C8: recovery completes before mount enable.
 
-## CONTRACT 3
-State-changing operations must be WAL-tracked.
+## FAILURES
+- C2 failure -> reject commit and retry path.
+- C3 failure -> abort operation.
+- C4 failure risk -> rollback to last commit.
+- C5 failure -> quarantine chunk and alert.
+- C8 failure -> block mount or force read-only mode.
 
-## CONTRACT 4
-No partial write visible to users.
-
-## CONTRACT 5
-Chunk ID must equal BLAKE3(content).
-
-## CONTRACT 6
-Metadata is source of truth.
-
-## CONTRACT 7
-Delete is logical first, physical later.
-
-## CONTRACT 8
-GC never deletes uncertain/live-referenced chunks.
-
-## CONTRACT 9
-Version numbers are monotonic.
-
-## CONTRACT 10
-Recovery completes before mount activation.
-
-## CONTRACT 11
-Tombstoned objects are not visible in namespace.
-
-## CONTRACT 12
-Cache/index may accelerate, but cannot override truth.
-
-## WHAT IF CONTRACT BREAKS?
-- Break #1/#5 -> data integrity risk
-- Break #2/#9 -> write conflict corruption risk
-- Break #3/#10 -> crash recovery risk
-- Break #7/#8 -> data loss risk
-- Break #11/#12 -> stale/ghost visibility risk
-
-## ENFORCEMENT FLOW
-operation request
-  ↓
-validate contract preconditions
-  ↓ fail
-reject operation + log reason
-  ↓ pass
-execute operation
-  ↓
-validate postconditions
-  ↓
-commit + audit
-
-## FINAL RULE
-If any contract cannot be proven true,
--> do not commit,
--> keep last safe state.
+## INVARIANTS
+- Contract validation precedes commit.
+- Failed contract implies non-commit.
+- Last safe committed state is preserved.

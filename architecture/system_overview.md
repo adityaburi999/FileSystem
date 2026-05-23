@@ -1,74 +1,47 @@
-# SYSTEM OVERVIEW (FLOW STYLE)
+# SYSTEM OVERVIEW
 
-Project: RedirectFS / FileSystem
-Goal: versioned + immutable + crash-safe filesystem
-
-## MAIN PATH
-User App
-  ↓ POSIX syscall
-FUSE Layer
-  ↓
-Path Resolver
-  ↓
-Metadata Engine
-  ↓
-Read/Write Engine
-  ↓
-Chunk Engine (4MB + BLAKE3)
-  ↓
-Object Store
-  ↓
-Disk Layout
-
-Support modules (parallel):
+## STRUCTURE
+- FUSE Layer
+- Path Resolver
+- Metadata Engine
+- Read Engine
+- Write Engine
+- Chunk Engine
+- Object Store
 - WAL Engine
 - Cache Engine
 - Index Engine
 - GC Engine
-- Staging Engine
 - Recovery Engine
+- Staging Engine
 
-## MODULE CONNECTION MAP
-FUSE -> Path Resolver -> Metadata
-Write Engine -> Chunk Engine -> Object Store -> WAL -> Metadata(CAS)
-Read Engine -> Cache -> Object Store -> Reconstruct -> FUSE
-Delete -> Metadata Tombstone -> WAL -> GC Trigger
-Recovery -> WAL Replay -> Metadata Fix -> Staging Cleanup
+## FLOW
+- Application syscall -> FUSE
+- FUSE -> Path Resolver
+- Path Resolver -> Metadata Engine
+- Read request -> Read Engine -> Cache -> Object Store
+- Write request -> Write Engine -> Chunk Engine -> Object Store
+- Write path -> WAL append -> Metadata CAS commit
+- Delete request -> Metadata tombstone -> WAL append
+- GC cycle -> live-ref scan -> orphan cleanup
+- Crash boot -> Recovery replay -> mount enable
 
-## STORAGE LAYOUT
-/wal
-/metadata
-/objects
-/cache
-/staging
-/system
+## RULES
+- Metadata is authority.
+- Chunks are immutable.
+- No in-place overwrite.
+- All state changes require WAL.
+- All metadata mutations require CAS.
+- Mount enabled only after recovery success.
 
-## GLOBAL BEHAVIOR
-- No in-place overwrite
-- Metadata controls truth
-- Chunks are immutable
-- Delete is logical first
-- GC does physical cleanup later
+## FAILURES
+- Path resolution miss -> return ENOENT.
+- Metadata/chunk mismatch -> block object + recovery flag.
+- WAL write failure -> abort transaction.
+- CAS conflict -> retry with latest version.
+- Recovery failure -> mount read-only or fail mount.
 
-## WHAT CAN GO WRONG?
-1) Path resolver misses object
-   -> fallback to index scan/graph walk
-   -> if still missing: ENOENT
-
-2) Metadata/object mismatch
-   -> mark inconsistency
-   -> recovery/repair on startup
-
-3) Chunk corrupt hash
-   -> read fails EIO
-   -> quarantine + alert + restore from version
-
-4) Crash during write
-   -> WAL + staging preserve intent
-   -> replay/rollback on boot
-
-## FINAL RULE
-If module output is uncertain,
--> do not expose partial data,
--> fail safe,
--> keep last committed version visible.
+## INVARIANTS
+- Visible state is committed state.
+- Version order is monotonic.
+- Uncertain state is never exposed.

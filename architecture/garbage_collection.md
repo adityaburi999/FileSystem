@@ -1,46 +1,37 @@
-# GARBAGE COLLECTION (SAFE SWEEP)
+# GARBAGE COLLECTION
 
-## TWO PHASE MODEL
-PHASE 1: MARK LIVE
-- Scan active metadata versions
-- Build live chunk reference set
-- Add in-flight WAL txn references
+## STRUCTURE
+- Live Reference Scanner
+- WAL Inflight Scanner
+- Candidate Set Builder
+- Sweep Executor
+- Audit Logger
 
-PHASE 2: SWEEP CANDIDATES
-- Scan object store chunks
-- chunk not in live set -> orphan candidate
-- apply safety delay window
-- delete confirmed orphan chunks
+## FLOW
+- Start GC cycle
+- Scan committed metadata -> live refs
+- Scan WAL inflight txns -> protected refs
+- Enumerate object store chunks
+- Build orphan candidates = chunks not referenced
+- Apply retention delay window
+- Revalidate candidate references
+- Delete confirmed orphan chunks
+- Persist audit records
 
-## VERSION PRUNING
-- Keep last N versions OR time window
-- Mark older versions for prune
-- Recompute references before physical chunk delete
+## RULES
+- GC is conservative by default.
+- Single uncertainty blocks candidate deletion.
+- Revalidation required before delete.
+- GC must not block foreground IO path.
 
-## TOMBSTONE HANDLING
-- Tombstoned metadata older than retention
-- verify no active refs
-- delete metadata + orphan chunks
+## FAILURES
+- Metadata snapshot stale -> rerun with fresh snapshot.
+- Inflight txn detected -> defer candidate.
+- Delete IO failure -> retry/backoff queue.
+- Crash during sweep -> restart idempotent pass.
+- Audit write failure -> halt destructive phase.
 
-## WHAT CAN GO WRONG?
-1) False orphan detection due to stale snapshot
-   -> recheck before delete
-   -> if uncertain, skip
-
-2) Chunk still referenced by open txn
-   -> detect from WAL open txns
-   -> defer deletion
-
-3) Crash during sweep
-   -> idempotent rerun
-   -> already deleted items skipped
-
-4) Massive orphan burst
-   -> throttle deletes
-   -> avoid IO starvation
-
-## GC RULES
-- Conservative by default
-- Never delete on first doubt
-- Metadata + WAL together decide liveness
-- Audit every delete action
+## INVARIANTS
+- Live chunk is never deleted.
+- GC actions are replay-safe.
+- Every delete has an audit record.
