@@ -1,208 +1,235 @@
 # 🧠 RedirectFS — Next-Generation Virtual Filesystem & Storage Engine
 
-RedirectFS is a **research-grade virtual filesystem + object storage engine** designed to rethink how operating systems store, access, and manage files at scale.
+RedirectFS is a **research-grade virtual filesystem + object storage engine** that rethinks how files are stored, accessed, secured, and scaled in modern systems.
 
 It combines:
-- A FUSE-based filesystem interface (Linux-compatible)
-- A versioned metadata graph (redirect-based file model)
-- An immutable chunked object store
-- A write-ahead logging (WAL) transaction system
-- A crash-safe staging layer
-- A background garbage collection system
+- FUSE-based Linux filesystem interface
+- Versioned metadata graph (redirect objects)
+- Immutable chunk-based storage
+- Write-Ahead Logging (WAL)
+- Streaming write pipeline
+- Garbage collection system
+- Multi-layer caching and indexing
 
 ---
 
-# 🚀 What Problem This Project Solves
+# 🚀 What Problem This Solves
 
-Traditional filesystems (ext4, NTFS, etc.) suffer from:
+Traditional filesystems (ext4, NTFS, etc.) struggle with:
 
-- Weak crash recovery guarantees in complex writes
-- Inefficient handling of massive numbers of small files
+- Weak crash recovery in complex writes
+- In-place mutation leading to corruption risk
+- Slow metadata lookup at large scale
 - Poor deduplication across files
-- Expensive metadata operations at large scale
-- Limited versioning and rollback capabilities
-- In-place mutation leading to corruption risks
+- No native versioning system
+- Limited scalability for TB-scale workloads
 
-RedirectFS is designed to solve these limitations by fundamentally changing the storage model.
+RedirectFS replaces the file model with a **versioned, immutable storage graph**.
 
 ---
 
 # 🧩 Core Idea
 
-Instead of storing files directly on disk:
+Instead of storing files directly:
 
-> Files are represented as **redirect objects** that point to immutable chunk data.
+> Files are represented as **redirect objects pointing to immutable chunks**
 
-This introduces a fully versioned, atomic, and recoverable storage model.
-
----
-
-# 🏗️ System Architecture Overview
-
-RedirectFS is composed of multiple independent subsystems:
-
-## 1. FUSE Layer
-Interfaces with the Linux kernel to intercept filesystem calls:
-- open()
-- read()
-- write()
-- mkdir()
-- unlink()
+This enables:
+- Versioning
+- Atomic updates
+- Crash-safe writes
+- Deduplication
+- Efficient recovery
 
 ---
 
-## 2. Metadata Engine
-Stores:
-- File redirect objects (versioned pointers to chunks)
-- Directory objects (graph-based hierarchy)
+# 🏗️ System Architecture
 
-Provides:
-- Path resolution
-- Version tracking
-- Atomic metadata updates (CAS-based)
+## Layers:
 
----
+[FUSE Layer] ↓ [Path Resolver] ↓ [Metadata Engine] ↓ [Write / Read Engine] ↓ [Chunk Engine] ↓ [Object Store] ↓ [Disk Storage]
 
-## 3. Chunk Engine
-- Splits file data into fixed-size streaming chunks
-- Uses BLAKE3 hashing for content addressing
-- Enables deduplication across the system
+Supporting systems:
+- WAL Engine (transactions)
+- GC Engine (cleanup)
+- Cache Engine (performance)
+- Index Engine (fast lookup)
+- Staging Layer (crash safety)
 
 ---
 
-## 4. Object Store
-- Stores immutable chunks on disk
-- Content-addressed storage layout
-- Never overwrites existing data
+# 📂 Disk Layout
+
+/wal/         → transaction logs (append-only) /metadata/    → file + directory objects (versioned) /objects/     → immutable chunk storage (content-addressed) /cache/       → RAM/SSD hot data cache /staging/     → temporary incomplete writes /system/      → internal engine state (hidden)
 
 ---
 
-## 5. Write-Ahead Log (WAL)
-- Records every operation before execution
-- Enables crash recovery and transaction replay
-- Ensures system consistency after failure
+# 📖 File System Model
+
+## Files
+- Represented as **redirect objects**
+- Point to immutable chunk lists
+- Fully versioned
+
+## Directories
+- Metadata graph nodes
+- Store parent-child relationships
+- Use name → object_id mapping
 
 ---
 
-## 6. Write Engine (Streaming System)
-- Handles FUSE write streams
-- Performs real-time chunking
-- Commits data incrementally
+# ✍️ Write Flow (Streaming + Atomic)
+
+FUSE write request → streaming buffer → chunking (4MB blocks) → BLAKE3 hash per chunk → store chunk immediately → WAL logging → staging update → CAS validation → atomic metadata commit → cache update
 
 ---
 
-## 7. Staging Layer
-- Temporary storage for incomplete writes
-- Fully isolated from live filesystem
-- Automatically discarded on crash or commit
+# 📖 Read Flow
+
+path → metadata graph traversal → redirect object resolution → chunk list fetch → cache lookup → parallel chunk retrieval → file reconstruction
 
 ---
 
-## 8. Garbage Collection Engine
-- Removes unreferenced chunks
-- Prunes old file versions
-- Applies retention policies
-- Ensures long-term storage efficiency
+# 🗑️ Delete Flow
+
+user delete → remove from live namespace → mark tombstone (logical delete) → WAL log entry → GC handles physical deletion later
 
 ---
 
-## 9. Cache Engine
-- Multi-tier caching (RAM / SSD)
-- Accelerates read performance
-- Stores hot chunks and reconstructed files
+# ♻️ Garbage Collection
+
+Two-phase system:
+
+## 1. Orphan Detection
+- scan chunks
+- check metadata references
+- mark unreferenced chunks
+
+## 2. Version Pruning
+- remove old file versions (policy-based)
+- free associated chunks
+
+## 3. Cleanup
+- delete orphan chunks after safety delay
 
 ---
 
-## 10. Index Engine
-- Accelerates path resolution
-- Maps filesystem paths to object IDs
-- Optimized for large-scale datasets (10TB–100TB+)
+# 🔁 Crash Recovery
+
+system restart → read WAL logs → detect incomplete transactions → validate chunks → rebuild metadata state → discard staging data → restore consistent filesystem
 
 ---
 
-# ⚡ Key Design Principles
+# 🧵 Concurrency Model
 
-RedirectFS is built on strict system guarantees:
+- Optimistic concurrency control
+- Version-based metadata
+- Compare-And-Swap (CAS) commits
 
-- 📌 No in-place file modification
-- 📌 All writes are streamed and chunked
-- 📌 All data is versioned
-- 📌 All commits are atomic (CAS + WAL)
-- 📌 Metadata is the single source of truth
-- 📌 Object storage is immutable
-- 📌 Deletion is logical first, physical later
+Rule:
 
----
+IF version mismatch → abort transaction ELSE → atomic commit
 
-# 🔁 File Lifecycle Model
-
-## Write
-staging → chunking → WAL logging → object store → metadata commit → atomic switch
-
-## Read
-path → metadata graph → redirect object → chunk fetch → reconstruction → cache
-
-## Delete
-logical tombstone → WAL log → GC later removes data safely
+Prevents silent overwrites.
 
 ---
 
-# 💽 Disk Model
+# 📁 Folder System
 
-- `/wal` → transaction logs
-- `/metadata` → file & directory objects
-- `/objects` → immutable chunks
-- `/cache` → performance layer
-- `/staging` → temporary writes
-- `/system` → internal engine state (hidden)
+- Folders are metadata directory objects (NOT real disk folders)
+- Path resolution uses graph traversal
+- Each folder uses:
+  name → object_id mapping
 
 ---
 
-# 🧠 Why This Project Is Interesting
+# 🔐 Security & Tamper Resistance
 
-RedirectFS explores ideas from:
-- Modern distributed storage systems (S3-like design)
-- Git-style versioning
-- Database WAL + recovery models
-- Content-addressed storage systems
-- Filesystem-level virtualization
+RedirectFS improves security through **structure, not secrecy**:
 
-It is designed as a **research + systems engineering project**, not just a basic filesystem.
+## 1. Immutable Storage
+- No in-place file modification
+- All updates create new versions
 
----
+## 2. Content-Addressed Chunks
+- Stored using BLAKE3 hashes
+- Any modification breaks integrity checks
 
-# ⚠️ Current Status
+## 3. Versioned Metadata
+- Atomic pointer swaps only
+- Prevents partial-state corruption
 
-This project is currently in:
-> Architecture & design phase
+## 4. WAL Transaction System
+- Every operation logged before execution
+- Enables full recovery after crash
 
-No production implementation yet.
-
-Next steps involve:
-- Rust module implementation
-- WAL engine coding
-- Object store development
-- FUSE integration
-- Full end-to-end prototype
+⚠️ Not “unhackable”, but:
+- harder to silently corrupt
+- easier to detect tampering
+- safer under failure conditions
 
 ---
 
-# 🧭 Goal
+# ⚡ Performance & Optimization
+
+## 1. Fast Path Lookup
+- Indexed metadata engine (B-tree / LSM-tree)
+- No sequential directory scanning
+
+## 2. Multi-Level Cache
+- RAM cache (hot data)
+- SSD cache (warm data)
+- reconstructed cache
+
+## 3. Chunk Parallelism
+- File chunks fetched in parallel
+- Faster large file reads
+
+## 4. Deduplication
+- Identical chunks stored once
+- Saves storage + reduces IO
+
+## 5. Streaming I/O
+- No full file memory loading
+- Efficient for large files (GB–TB scale)
+
+---
+
+# 📊 Scaling Model
+
+- 1GB → single-machine filesystem
+- 1TB → caching + chunking required
+- 10TB → indexing + compaction needed
+- 100TB → distributed system (sharding + replication)
+
+---
+
+# 🧠 Core System Rules
+
+- No in-place writes
+- All data is versioned
+- All writes are streaming
+- All commits are atomic (WAL + CAS)
+- Metadata is source of truth
+- Object storage is immutable
+- Deletion is logical first, physical later
+
+---
+
+# 🚀 Goal
 
 To build a filesystem that is:
 
 - Safer than traditional filesystems
-- More scalable at large datasets
-- Naturally versioned
+- Naturally versioned like Git
 - Crash-resilient by design
-- Efficient for modern AI/data workloads
+- Optimized for large-scale workloads
+- Ready for distributed scaling
 
 ---
 
 # 📌 Summary
 
-RedirectFS reimagines storage as:
+RedirectFS replaces traditional file storage with a:
 
-> A versioned, immutable, transaction-safe object graph instead of a mutable file tree.
-
----
+> versioned, immutable, transaction-safe object graph instead of a mutable directory tree
