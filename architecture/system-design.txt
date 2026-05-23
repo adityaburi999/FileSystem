@@ -1,0 +1,121 @@
+This file have the System Design of our project FileSystem.
+It contains informations of how everything will actually work around.
+
+## Read File
+User opens file (/path/file.txt)
+   ↓
+FUSE intercepts request
+   ↓
+Resolve virtual path → Redirect Object
+   ↓
+Validate Redirect Object (hash/signature)
+   ↓
+Fetch metadata (object_id, chunk list, size)
+   ↓
+Check Cache (RAM → SSD)
+   ↓
+If cache miss:
+        ↓
+    Fetch chunks from Object Store
+   ↓
+Reassemble file from chunks
+   ↓
+Return stream to application
+
+## Write/Create File
+WRITE FLOW (STREAMING MODEL)
+
+FUSE receives write blocks (4KB–128KB)
+↓
+Streaming chunk buffer (per open file handle)
+↓
+Accumulate into fixed-size chunks (e.g. 4MB)
+↓
+Each chunk:
+    → BLAKE3 hash
+    → immediately stored in object store
+    → chunk ID recorded in transaction log
+↓
+WAL updated incrementally
+↓
+On file close:
+    → finalize redirect object version
+    → atomic CAS commit
+
+## Startup Recovery
+
+boot system
+↓
+read WAL
+↓
+find incomplete TXNs
+↓
+validate chunks (hash check)
+↓
+rollback or repair redirects
+↓
+mark orphan objects
+↓
+restore filesystem state
+↓
+activate system
+
+## Garbage System
+GARBAGE COLLECTION (TWO PHASE)
+
+PHASE 1: ORPHAN DETECTION
+- scan chunks
+- check references from active redirect versions
+- mark unreferenced chunks as ORPHAN
+
+PHASE 2: VERSION PRUNING
+- delete old redirect versions based on policy:
+    • keep last N versions OR
+    • time-based retention (e.g. 30 days)
+- after pruning → more chunks become orphaned
+- GC safely deletes orphaned chunks after delay
+
+## Concurrency Model
+READ:
+→ lock-free (mostly)
+→ uses version snapshot
+
+WRITE:
+→ optimistic concurrency
+→ WAL transaction
+→ versioned redirect update
+
+DELETE:
+→ logical delete + version bump
+
+GC:
+→ background, read-only scans
+
+## Scaling Model
+1GB
+-single machine
+-simple metadata
+-fast local reads
+1TB
+-caching matters
+-chunking required
+10TB
+-indexing + compaction + parallel IO
+-100TB
+-distributed system
+-sharding + replication
+-multi-node cache + storage layers
+
+## Concurrency Control
+CONCURRENCY CONTROL
+
+- System uses optimistic concurrency + CAS
+- Every redirect object has a version number
+- Commit rule:
+
+  IF current_version != expected_version:
+      → abort or retry
+  ELSE:
+      → allow atomic commit
+
+- Prevents silent overwrite from concurrent writes

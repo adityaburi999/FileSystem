@@ -1,0 +1,105 @@
+💽 DISK LAYOUT DESIGN
+========================================================
+/storage_root
+========================================================
+
+/wal/
+    segment_0001.log
+    segment_0002.log
+    ...
+→ Append-only write-ahead logs
+→ Used for crash recovery
+→ Never modified, only appended
+
+========================================================
+/metadata/
+========================================================
+
+/metadata/
+    /dir/
+        dir_ab12.meta
+        dir_c91f.meta
+    /files/
+        file_fa82c1.v1.meta
+        file_fa82c1.v2.meta
+
+→ Stores:
+   - redirect objects (file metadata)
+   - directory objects (folder structure)
+   - versioned file state
+
+→ Sharded by object_id prefix
+→ Immutable metadata versions
+
+========================================================
+/objects/
+========================================================
+
+/objects/
+    /ab/
+        /cd/
+            3fa9c1b2.chunk
+            91b2ff10.chunk
+
+→ Immutable chunk storage
+→ Content-addressed (BLAKE3 hash-based naming)
+→ Deduplicated storage layer
+→ Never overwritten
+
+========================================================
+/cache/
+========================================================
+
+/cache/
+    /ram/
+    /ssd/
+    /reconstructed/
+
+→ Temporary performance layer
+→ Stores hot chunks and reconstructed files
+→ Fully disposable (can be wiped anytime)
+
+========================================================
+/staging/
+========================================================
+
+/staging/
+    txn_001/
+        buffer.tmp
+        chunks.tmp
+        redirect.tmp
+
+→ Temporary write area
+→ Holds incomplete writes
+→ NOT visible to filesystem
+→ Deleted on crash or commit
+
+========================================================
+/system/
+========================================================
+
+/system/
+    /gc/
+    /snapshots/
+    /index/
+    /state/
+
+→ Internal engine data
+→ WAL checkpoints
+→ GC state tracking
+→ Indexing structures
+
+→ Hidden from user filesystem (FUSE restriction)
+
+========================================================
+KEY DESIGN RULES
+========================================================
+
+1. WAL = append-only truth log
+2. metadata = versioned filesystem state
+3. objects = immutable data chunks
+4. cache = disposable acceleration layer
+5. staging = crash-safe temporary workspace
+6. system = internal engine (not user accessible)
+
+========================================================

@@ -1,0 +1,128 @@
+# This is the tech stack of our project "File System"
+
+## OS to build and deploy test it
+    The best OS is linux
+        - We want something small in size so we are going to use something lightweight and fast with minimal other tasks.
+        Final choice - Debian minimal
+            -extremely stable
+            -lightweight
+            -huge package ecosystem
+            -predictable behaviour
+            -highest usage
+## Main coding language
+    Options are C/C++ and Rust but Rust have following advantages:
+        - memory safe (Most Important)
+        - system level performance
+        - highly used in file systems
+        
+    So this project will be build in Rust
+## Frontend
+    INITIALLY- the filesystem itself
+    LATER-
+        Native filesystem interface
+        Mangaement Dashboard
+            - This will use React, Tauri
+
+## MetaData Engine
+    Optimizations Needed-
+        - Sub MilliSecond Lookups
+        - Strict write ahead safety(Acid Compliance)
+        - Low memory overhead
+    Tech Stack- 
+        - Rust : core metadata logic
+        - SQLite: Primary MetaData Database, helps achive this goal perfectly.
+        - Serde: Serialization framework for Rust
+        - Bincode: Compact binary Serialization for fast metadata storage.
+        - BLAKE3: 
+        - WAL: Used to prevent metadata corruption during crashes.
+        - Copy-on-write MetaData: Metadata updates creates new versions instead of modifying existing structures directly. Improves crash safety and rollback cabability  
+
+    Future Migration to RocksDB/custom metadata Engine
+## Storage Backend
+    - Content-addressable object storage: Files are stored based on content hashes instead of physical paths.
+    - Chunk-based storage architecture: Large files split into chunks.
+    - Immutable blob objects: Stored chunks never modified directly.
+    - BLAKE3 content hashing: 
+        Used for:
+            - chunk identity
+            - corruption detection
+            - deduplication
+            - integrity verification
+    - Copy-on-write storage model: Modified data creates new storage objects, it created partial corruption during crashes
+    - Inline small-file optimization: Tiny files stored directly inside metadata objects instead of separate backend blobs.
+    - Compressed object containers
+    - Background garbage collection: Unused chunks cleaned asynchronously.
+## Some other TechStacks
+
+###Caching Layer:
+- Multi-level adaptive cache
+- RAM-based hot object cache
+- Metadata lookup cache
+- Chunk read-ahead buffering
+- LRU/LFU hybrid eviction
+- Async write buffering
+- Memory-mapped cache regions
+- SSD persistent cache layer
+###Database:
+- SQLite (initial)
+- RocksDB (future scaling)
+- WAL journaling
+- Copy-on-write metadata transactions
+- B-tree indexing
+- Crash-safe commits
+- Incremental compaction
+- Metadata versioning
+###IPC/API System:
+- Internal Rust async channels
+- Tokio runtime
+- gRPC APIs
+- UNIX domain sockets
+- REST management API
+- Event-driven architecture
+- Structured binary protocol
+- Permission-aware API gateway
+###Frontend/Dashboard:
+- Tauri
+- React
+- TypeScript
+- TailwindCSS
+- Zustand state management
+- WebSocket live updates
+- Virtual filesystem explorer
+- Storage analytics dashboard
+###Testing Framework:
+- cargo test
+- Property-based testing
+- Filesystem fuzzing
+- Crash simulation testing
+- Concurrent-write stress testing
+- Metadata corruption injection
+- Snapshot rollback tests
+- Benchmark/performance testing
+###Observability/Logging:
+- tracing crate
+- Structured JSON logging
+- Prometheus metrics
+- Grafana dashboards
+- Real-time health monitoring
+- Metadata audit logs
+- Object access tracing
+- Failure event tracking
+###Packaging/Distribution:
+- Cargo build system
+- Static Rust binaries
+- Debian package support
+- AppImage distribution
+- Automated update system
+- Secure binary signing
+- Containerized deployment support
+- Reproducible builds
+###Backup/Recovery System:
+- Metadata snapshotting
+- Incremental object backups
+- Copy-on-write snapshots
+- WAL recovery replay
+- Multi-version metadata history
+- Chunk integrity verification
+- Automatic corruption isolation
+- Redundant metadata replicas

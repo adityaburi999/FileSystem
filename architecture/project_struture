@@ -1,0 +1,95 @@
+storage-engine/
+│
+├── Cargo.toml
+├── README.md
+│
+├── fuse-layer/
+│   ├── src/
+│   │   ├── main.rs
+│   │   ├── fs_ops.rs        → open/read/write/mkdir/unlink handlers
+│   │   ├── fuse_bridge.rs   → Linux FUSE integration
+│   │   └── inode_map.rs     → maps kernel inodes → object_ids
+│
+├── path-resolver/
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── resolver.rs      → /a/b/c → metadata traversal
+│   │   └── index_lookup.rs  → fast path → object_id lookup
+│
+├── metadata-engine/
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── file_object.rs   → redirect objects (versions)
+│   │   ├── dir_object.rs    → directory graph nodes
+│   │   ├── versioning.rs    → CAS + version control
+│   │   └── store.rs         → metadata persistence layer
+│
+├── write-engine/
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── stream_writer.rs → streaming buffer (FUSE writes)
+│   │   ├── transaction.rs   → WAL-backed write txns
+│   │   └── commit.rs        → atomic commit logic
+│
+├── chunk-engine/
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── chunker.rs       → streaming chunk split logic
+│   │   ├── hasher.rs        → BLAKE3 hashing
+│   │   └── chunk_map.rs     → chunk ID tracking per file
+│
+├── object-store/
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── writer.rs        → writes /objects/*
+│   │   ├── reader.rs        → reads chunks
+│   │   ├── layout.rs        → disk sharding logic
+│   │   └── dedup.rs         → avoid duplicate chunks
+│
+├── wal-engine/
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── log_writer.rs    → append-only WAL writes
+│   │   ├── replay.rs        → crash recovery engine
+│   │   └── segment.rs       → WAL file rotation
+│
+├── gc-engine/
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── scanner.rs       → find orphan chunks
+│   │   ├── version_gc.rs    → prune old versions
+│   │   └── cleanup.rs       → safe deletion logic
+│
+├── cache-engine/
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── ram_cache.rs     → hot data cache
+│   │   ├── ssd_cache.rs     → warm storage cache
+│   │   └── policy.rs        → LRU/LFU eviction
+│
+├── index-engine/
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── btree.rs         → metadata index
+│   │   ├── lsm.rs           → large-scale indexing
+│   │   └── path_index.rs    → fast path resolution
+│
+├── staging/
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── temp_writer.rs   → incomplete write storage
+│   │   └── cleanup.rs       → crash-safe discard logic
+│
+├── system-core/
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── orchestrator.rs  → connects all modules
+│   │   └── config.rs        → system configuration
+│
+└── system-files/
+    ├── wal/
+    ├── metadata/
+    ├── objects/
+    ├── cache/
+    ├── staging/
+    └── system/
