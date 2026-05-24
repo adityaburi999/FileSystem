@@ -1,0 +1,16 @@
+[package]
+name = "fuse"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cache = { path = "../cache" }
+fs_core = { path = "../core" }
+metadata = { path = "../metadata" }
+path_resolver = { path = "../path_resolver" }
+thiserror = "1"
+wal = { path = "../wal" }
+
+[dev-dependencies]
+chunk_store = { path = "../chunk_store" }
+tempfile = "3"

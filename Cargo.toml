@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "fuse",
+    "path_resolver",
+    "staging",
+    "wal",
+    "metadata",
+    "chunk_store",
+    "cache",
+    "gc",
+    "core",
+]
+resolver = "2"

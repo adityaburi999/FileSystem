@@ -1,0 +1,12 @@
+[package]
+name = "chunk_store"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+blake3 = "1"
+thiserror = "1"
+wal = { path = "../wal" }
+
+[dev-dependencies]
+tempfile = "3"

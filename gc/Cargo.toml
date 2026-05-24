@@ -1,0 +1,10 @@
+[package]
+name = "gc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chunk_store = { path = "../chunk_store" }
+metadata = { path = "../metadata" }
+thiserror = "1"
+wal = { path = "../wal" }
