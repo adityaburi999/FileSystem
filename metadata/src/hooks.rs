@@ -31,6 +31,27 @@ pub enum MetadataError {
 
     #[error("metadata serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("metadata sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
+    #[error("invalid namespace path")]
+    InvalidPath,
+
+    #[error("parent directory does not exist")]
+    ParentMissing,
+
+    #[error("directory not found")]
+    DirectoryNotFound,
+
+    #[error("directory not empty")]
+    DirectoryNotEmpty,
+
+    #[error("path type conflict")]
+    PathTypeConflict,
+
+    #[error("path not found")]
+    PathNotFound,
 }
 
 pub trait MetadataWalHook: Send + Sync {
@@ -68,13 +89,20 @@ pub struct InMemoryMetadataHook {
 
 struct MetadataState {
     files: HashMap<String, FileMetadataState>,
+    directories: HashSet<String>,
     applied_transactions: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistentMetadataState {
     files: HashMap<String, FileMetadataState>,
+    #[serde(default = "default_directories")]
+    directories: HashSet<String>,
     applied_transactions: HashSet<String>,
+}
+
+fn default_directories() -> HashSet<String> {
+    HashSet::from(["/".to_string()])
 }
 
 impl InMemoryMetadataHook {
@@ -82,6 +110,7 @@ impl InMemoryMetadataHook {
         Self {
             state: Mutex::new(MetadataState {
                 files: HashMap::new(),
+                directories: default_directories(),
                 applied_transactions: HashSet::new(),
             }),
         }
@@ -105,6 +134,62 @@ impl InMemoryMetadataHook {
         }
         Ok(set)
     }
+
+    pub fn create_directory(&self, path: &str) -> Result<(), MetadataError> {
+        validate_directory_path(path)?;
+        let mut state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
+        if path != "/" {
+            let parent = parent_directory(path)?;
+            if !state.directories.contains(&parent) {
+                return Err(MetadataError::ParentMissing);
+            }
+        }
+        if let Some(existing) = state.files.get(path) {
+            if !existing.tombstoned {
+                return Err(MetadataError::PathTypeConflict);
+            }
+            // Reclaim historical tombstoned file path before creating a directory node.
+            state.files.remove(path);
+        }
+        state.directories.insert(path.to_string());
+        Ok(())
+    }
+
+    pub fn list_children(&self, path: &str) -> Result<Vec<String>, MetadataError> {
+        validate_directory_path(path)?;
+        let state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
+        if !state.directories.contains(path) {
+            return Err(MetadataError::DirectoryNotFound);
+        }
+        collect_children(path, &state.directories, &state.files)
+    }
+
+    pub fn remove_directory(&self, path: &str) -> Result<(), MetadataError> {
+        validate_directory_path(path)?;
+        if path == "/" {
+            return Err(MetadataError::InvalidPath);
+        }
+        let mut state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
+        if !state.directories.contains(path) {
+            return Err(MetadataError::DirectoryNotFound);
+        }
+        let children = collect_children(path, &state.directories, &state.files)?;
+        if !children.is_empty() {
+            return Err(MetadataError::DirectoryNotEmpty);
+        }
+        state.directories.remove(path);
+        Ok(())
+    }
+
+    pub fn rename_path(&self, src: &str, dst: &str) -> Result<(), MetadataError> {
+        validate_directory_path(src)?;
+        validate_directory_path(dst)?;
+        if src == "/" || dst == "/" || src == dst {
+            return Err(MetadataError::InvalidPath);
+        }
+        let mut state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
+        rename_in_state(&mut state, src, dst)
+    }
 }
 
 impl MetadataWalHook for InMemoryMetadataHook {
@@ -119,10 +204,13 @@ impl MetadataWalHook for InMemoryMetadataHook {
         let mut state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
         let MetadataState {
             files,
+            directories,
             applied_transactions,
+            ..
         } = &mut *state;
         apply_write(
             files,
+            directories,
             applied_transactions,
             tx_id,
             file_path,
@@ -171,6 +259,7 @@ impl MetadataDeleteHook for InMemoryMetadataHook {
         let MetadataState {
             files,
             applied_transactions,
+            ..
         } = &mut *state;
         apply_delete(
             files,
@@ -201,6 +290,90 @@ impl FileBackedMetadataHook {
         let state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
         collect_live_chunk_ids(&state.files)
     }
+
+    pub fn create_directory(&self, path: &str) -> Result<(), MetadataError> {
+        validate_directory_path(path)?;
+        let mut state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
+        if path != "/" {
+            let parent = parent_directory(path)?;
+            if !state.directories.contains(&parent) {
+                return Err(MetadataError::ParentMissing);
+            }
+        }
+        if let Some(existing) = state.files.get(path) {
+            if !existing.tombstoned {
+                return Err(MetadataError::PathTypeConflict);
+            }
+            // Reclaim historical tombstoned file path before creating a directory node.
+            state.files.remove(path);
+        }
+        let prev_files = state.files.clone();
+        let prev_dirs = state.directories.clone();
+        state.directories.insert(path.to_string());
+        if let Err(e) = persist_state(&self.path, &state) {
+            state.files = prev_files;
+            state.directories = prev_dirs;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    pub fn list_children(&self, path: &str) -> Result<Vec<String>, MetadataError> {
+        validate_directory_path(path)?;
+        let state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
+        if !state.directories.contains(path) {
+            return Err(MetadataError::DirectoryNotFound);
+        }
+        collect_children(path, &state.directories, &state.files)
+    }
+
+    pub fn remove_directory(&self, path: &str) -> Result<(), MetadataError> {
+        validate_directory_path(path)?;
+        if path == "/" {
+            return Err(MetadataError::InvalidPath);
+        }
+
+        let mut state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
+        if !state.directories.contains(path) {
+            return Err(MetadataError::DirectoryNotFound);
+        }
+        let children = collect_children(path, &state.directories, &state.files)?;
+        if !children.is_empty() {
+            return Err(MetadataError::DirectoryNotEmpty);
+        }
+
+        let prev_dirs = state.directories.clone();
+        state.directories.remove(path);
+        if let Err(e) = persist_state(&self.path, &state) {
+            state.directories = prev_dirs;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    pub fn rename_path(&self, src: &str, dst: &str) -> Result<(), MetadataError> {
+        validate_directory_path(src)?;
+        validate_directory_path(dst)?;
+        if src == "/" || dst == "/" || src == dst {
+            return Err(MetadataError::InvalidPath);
+        }
+
+        let mut state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
+        let prev_files = state.files.clone();
+        let prev_dirs = state.directories.clone();
+        let result = rename_in_state(&mut state, src, dst);
+        if let Err(e) = result {
+            state.files = prev_files;
+            state.directories = prev_dirs;
+            return Err(e);
+        }
+        if let Err(e) = persist_state(&self.path, &state) {
+            state.files = prev_files;
+            state.directories = prev_dirs;
+            return Err(e);
+        }
+        Ok(())
+    }
 }
 
 impl MetadataWalHook for FileBackedMetadataHook {
@@ -215,12 +388,16 @@ impl MetadataWalHook for FileBackedMetadataHook {
         let mut state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
         let prev_files = state.files.clone();
         let prev_applied = state.applied_transactions.clone();
+        let prev_dirs = state.directories.clone();
         let MetadataState {
             files,
+            directories,
             applied_transactions,
+            ..
         } = &mut *state;
         apply_write(
             files,
+            directories,
             applied_transactions,
             tx_id,
             file_path,
@@ -231,6 +408,7 @@ impl MetadataWalHook for FileBackedMetadataHook {
         if let Err(e) = persist_state(&self.path, &state) {
             state.files = prev_files;
             state.applied_transactions = prev_applied;
+            state.directories = prev_dirs;
             return Err(e);
         }
         Ok(())
@@ -273,9 +451,11 @@ impl MetadataDeleteHook for FileBackedMetadataHook {
         let mut state = self.state.lock().map_err(|_| MetadataError::Poisoned)?;
         let prev_files = state.files.clone();
         let prev_applied = state.applied_transactions.clone();
+        let prev_dirs = state.directories.clone();
         let MetadataState {
             files,
             applied_transactions,
+            ..
         } = &mut *state;
         apply_delete(
             files,
@@ -287,6 +467,7 @@ impl MetadataDeleteHook for FileBackedMetadataHook {
         if let Err(e) = persist_state(&self.path, &state) {
             state.files = prev_files;
             state.applied_transactions = prev_applied;
+            state.directories = prev_dirs;
             return Err(e);
         }
         Ok(())
@@ -308,8 +489,173 @@ fn collect_live_chunk_ids(
     Ok(set)
 }
 
+fn is_live_file_at_path(files: &HashMap<String, FileMetadataState>, path: &str) -> bool {
+    files.get(path).map(|f| !f.tombstoned).unwrap_or(false)
+}
+
+fn validate_directory_path(path: &str) -> Result<(), MetadataError> {
+    if path.is_empty() || !path.starts_with('/') || path.contains('\0') {
+        return Err(MetadataError::InvalidPath);
+    }
+    if path.len() > 1 && path.ends_with('/') {
+        return Err(MetadataError::InvalidPath);
+    }
+    Ok(())
+}
+
+fn validate_file_path(path: &str) -> Result<(), MetadataError> {
+    validate_directory_path(path)?;
+    if path == "/" {
+        return Err(MetadataError::InvalidPath);
+    }
+    Ok(())
+}
+
+fn parent_directory(path: &str) -> Result<String, MetadataError> {
+    validate_directory_path(path)?;
+    if path == "/" {
+        return Ok("/".to_string());
+    }
+    let idx = path.rfind('/').ok_or(MetadataError::InvalidPath)?;
+    if idx == 0 {
+        return Ok("/".to_string());
+    }
+    Ok(path[..idx].to_string())
+}
+
+fn collect_children(
+    parent: &str,
+    directories: &HashSet<String>,
+    files: &HashMap<String, FileMetadataState>,
+) -> Result<Vec<String>, MetadataError> {
+    let mut children = HashSet::new();
+
+    for dir in directories {
+        if let Some(name) = direct_child_name(parent, dir) {
+            children.insert(name.to_string());
+        }
+    }
+
+    for (path, state) in files {
+        if state.tombstoned {
+            continue;
+        }
+        if let Some(name) = direct_child_name(parent, path) {
+            children.insert(name.to_string());
+        }
+    }
+
+    let mut out: Vec<String> = children.into_iter().collect();
+    out.sort();
+    Ok(out)
+}
+
+fn direct_child_name<'a>(parent: &str, candidate: &'a str) -> Option<&'a str> {
+    if parent == "/" {
+        if candidate == "/" || !candidate.starts_with('/') {
+            return None;
+        }
+        let rest = &candidate[1..];
+        if rest.is_empty() {
+            return None;
+        }
+        return rest.split('/').next();
+    }
+
+    let prefix = format!("{parent}/");
+    let rest = candidate.strip_prefix(&prefix)?;
+    if rest.is_empty() {
+        return None;
+    }
+    rest.split('/').next()
+}
+
+fn rename_in_state(state: &mut MetadataState, src: &str, dst: &str) -> Result<(), MetadataError> {
+    let src_is_dir = state.directories.contains(src);
+    let src_is_file = is_live_file_at_path(&state.files, src);
+    if !src_is_dir && !src_is_file {
+        return Err(MetadataError::PathNotFound);
+    }
+
+    let dst_parent = parent_directory(dst)?;
+    if !state.directories.contains(&dst_parent) {
+        return Err(MetadataError::ParentMissing);
+    }
+    if state.directories.contains(dst) || is_live_file_at_path(&state.files, dst) {
+        return Err(MetadataError::PathTypeConflict);
+    }
+
+    if src_is_dir {
+        let prefix = format!("{src}/");
+        let dst_prefix = format!("{dst}/");
+        if dst.starts_with(&prefix) {
+            return Err(MetadataError::PathTypeConflict);
+        }
+
+        // Rewrite directory nodes.
+        let old_dirs: Vec<String> = state.directories.iter().cloned().collect();
+        let mut new_dirs = HashSet::new();
+        for dir in old_dirs {
+            if dir == src {
+                new_dirs.insert(dst.to_string());
+            } else if let Some(suffix) = dir.strip_prefix(&prefix) {
+                new_dirs.insert(format!("{dst_prefix}{suffix}"));
+            } else {
+                new_dirs.insert(dir);
+            }
+        }
+        state.directories = new_dirs;
+
+        // Rewrite all file paths under moved directory, preserving metadata values.
+        let old_files: Vec<(String, FileMetadataState)> = state
+            .files
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut new_files = HashMap::new();
+        let mut moved_files = Vec::new();
+        for (path, value) in old_files {
+            if let Some(suffix) = path.strip_prefix(&prefix) {
+                moved_files.push((format!("{dst_prefix}{suffix}"), value));
+            } else {
+                new_files.insert(path, value);
+            }
+        }
+        if let Some(existing) = new_files.get(dst) {
+            if !existing.tombstoned {
+                return Err(MetadataError::PathTypeConflict);
+            }
+        }
+        new_files.remove(dst);
+        for (target_path, moved_state) in moved_files {
+            if let Some(existing) = new_files.get(&target_path) {
+                if !existing.tombstoned {
+                    return Err(MetadataError::PathTypeConflict);
+                }
+            }
+            // Reclaim tombstoned destination history before installing moved live entry.
+            new_files.remove(&target_path);
+            new_files.insert(target_path, moved_state);
+        }
+        state.files = new_files;
+        return Ok(());
+    }
+
+    // File rename.
+    if let Some(existing) = state.files.get(dst) {
+        if !existing.tombstoned {
+            return Err(MetadataError::PathTypeConflict);
+        }
+    }
+    state.files.remove(dst);
+    let value = state.files.remove(src).ok_or(MetadataError::PathNotFound)?;
+    state.files.insert(dst.to_string(), value);
+    Ok(())
+}
+
 fn apply_write(
     files: &mut HashMap<String, FileMetadataState>,
+    directories: &HashSet<String>,
     applied_transactions: &mut HashSet<String>,
     tx_id: &str,
     file_path: &str,
@@ -317,8 +663,16 @@ fn apply_write(
     chunk_ids: &[String],
     chunk_hashes: &[String],
 ) -> Result<(), MetadataError> {
+    validate_file_path(file_path)?;
     if chunk_ids.len() != chunk_hashes.len() {
         return Err(MetadataError::InvalidChunkVector);
+    }
+    let parent = parent_directory(file_path)?;
+    if !directories.contains(&parent) {
+        return Err(MetadataError::ParentMissing);
+    }
+    if directories.contains(file_path) {
+        return Err(MetadataError::PathTypeConflict);
     }
     if applied_transactions.contains(tx_id) {
         return Ok(());
@@ -377,6 +731,7 @@ fn load_or_init(path: &Path) -> Result<MetadataState, MetadataError> {
         }
         let state = MetadataState {
             files: HashMap::new(),
+            directories: default_directories(),
             applied_transactions: HashSet::new(),
         };
         persist_state(path, &state)?;
@@ -387,12 +742,16 @@ fn load_or_init(path: &Path) -> Result<MetadataState, MetadataError> {
     if bytes.is_empty() {
         return Ok(MetadataState {
             files: HashMap::new(),
+            directories: default_directories(),
             applied_transactions: HashSet::new(),
         });
     }
     let persisted: PersistentMetadataState = serde_json::from_slice(&bytes)?;
+    let mut directories = persisted.directories;
+    directories.insert("/".to_string());
     Ok(MetadataState {
         files: persisted.files,
+        directories,
         applied_transactions: persisted.applied_transactions,
     })
 }
@@ -404,6 +763,7 @@ fn persist_state(path: &Path, state: &MetadataState) -> Result<(), MetadataError
     let tmp_path = path.with_extension("tmp");
     let payload = serde_json::to_vec(&PersistentMetadataState {
         files: state.files.clone(),
+        directories: state.directories.clone(),
         applied_transactions: state.applied_transactions.clone(),
     })?;
 

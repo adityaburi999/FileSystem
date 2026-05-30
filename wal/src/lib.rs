@@ -182,6 +182,35 @@ mod tests {
     }
 
     #[test]
+    fn wal_open_defaults_to_sync_writes() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let wal_path = temp.path().join("wal.log");
+
+        let wal = WalLog::open(&wal_path).expect("wal should open");
+        assert!(wal.sync_writes_enabled());
+    }
+
+    #[test]
+    fn wal_open_with_sync_false_uses_buffered_mode() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let wal_path = temp.path().join("wal.log");
+
+        let wal = WalLog::open_with_sync(&wal_path, false).expect("wal should open");
+        assert!(!wal.sync_writes_enabled());
+
+        let txn = wal
+            .begin_transaction("/buffered.txt", OperationType::Write, 0)
+            .expect("transaction should be appended");
+        wal.commit_transaction(&txn)
+            .expect("commit should append in buffered mode");
+
+        let entries = wal.read_all().expect("wal should be readable");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].status, TxStatus::Pending);
+        assert_eq!(entries[1].status, TxStatus::Committed);
+    }
+
+    #[test]
     fn write_and_recover_committed_transaction() {
         let temp = tempfile::tempdir().expect("temp dir should be created");
         let wal_path = temp.path().join("wal.log");

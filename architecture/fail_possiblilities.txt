@@ -1,1 +1,60 @@
-This file contains all the ways in which this System can fail.
+This file contains major failure modes and current handling in the demo runtime.
+
+1) Startup recovery failure
+- Cause: WAL corruption, missing committed chunk, invalid WAL entry shape.
+- Behavior: startup_recover returns error; mount gate remains closed.
+
+2) CAS conflict on write/delete
+- Cause: expected_version does not match current metadata version.
+- Behavior: write returns conflict/busy; delete retries with bounded backoff then returns busy.
+
+3) Path/namespace violations
+- Missing parent directory on mkdir/write -> not found.
+- readdir on missing directory -> not found.
+- rmdir on non-empty directory -> conflict/not empty.
+- mkdir on existing live file -> conflict.
+- write on directory path -> conflict.
+- unlink on directory path -> conflict.
+- rmdir/rmtree on file path -> conflict.
+- rename/mkdir on tombstoned destination paths -> tombstone history is reclaimed so operations remain deterministic instead of colliding with stale hidden entries.
+
+4) WAL append or storage failure during write
+- Cause: disk/io failure while appending WAL or persisting chunk.
+- Behavior: transaction is aborted; partial state is not exposed.
+
+5) Integrity mismatch on read
+- Cause: chunk bytes do not match expected chunk hash/chunk ID.
+- Behavior: read fails with integrity/io error; data is not returned.
+
+6) Staging persistence issues
+- Cause: slot write/cleanup failures.
+- Behavior: operation may fail or continue best-effort depending on phase; startup purge removes stale slots (uncommitted and any leftover committed slots).
+
+7) Background GC failure
+- Cause: inventory/live-ref/inflight scan errors or delete failures.
+- Behavior: foreground requests continue; GC reports error and can retry on next run.
+
+8) Cache failures
+- Cause: lock poisoning or disk IO/serde error (persistent warm tier).
+- Behavior: operation may fallback to object store path, or bubble cache error when required.
+
+9) FUSE daemon worker failure
+- Cause: channel/worker shutdown or panic.
+- Behavior: API reports unavailable; process can restart daemon.
+
+10) FUSE daemon request timeout
+- Cause: daemon request processing stalls beyond configured request timeout.
+- Behavior: caller receives timeout; timeout can be tuned/disabled by daemon client configuration.
+
+11) FUSE daemon request pressure / pending backlog saturation
+- Cause: callers enqueue faster than daemon worker can drain.
+- Behavior: pending requests are bounded (default cap = 1024); requests above cap are rejected as unavailable, preventing unbounded in-process backlog growth.
+
+12) GC trigger pressure / enqueue backlog
+- Cause: unlink-heavy churn can enqueue scans faster than worker drain.
+- Behavior: enqueue is bounded (default pending cap = 64, tunable in GC-configured demos); excess enqueue attempts are dropped (best effort), preventing unbounded memory growth while preserving foreground latency.
+
+Known demo limitations
+- No kernel mount/syscall FUSE loop yet.
+- No distributed replication/failover.
+- No production-grade monitoring/alerting pipeline.

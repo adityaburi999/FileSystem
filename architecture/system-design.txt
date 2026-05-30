@@ -1,121 +1,92 @@
-This file have the System Design of our project FileSystem.
-It contains informations of how everything will actually work around.
+This file describes the current system design implemented in this repository.
+It is updated to match the current demo runtime behavior.
 
-## Read File
-User opens file (/path/file.txt)
-   ↓
-FUSE intercepts request
-   ↓
-Resolve virtual path → Redirect Object
-   ↓
-Validate Redirect Object (hash/signature)
-   ↓
-Fetch metadata (object_id, chunk list, size)
-   ↓
-Check Cache (RAM → SSD)
-   ↓
-If cache miss:
-        ↓
-    Fetch chunks from Object Store
-   ↓
-Reassemble file from chunks
-   ↓
-Return stream to application
+## Runtime Components (Implemented)
+- Path normalization and validation (path_resolver)
+- WAL transactions and recovery replay (wal)
+- Metadata CAS write/delete with idempotent replay (metadata)
+- Namespace operations reclaim tombstoned destination paths on mkdir/rename for deterministic behavior (metadata)
+- Namespace operations: mkdir, mkdir_p, readdir/list, readdir_with_kinds, walk_dir(recursive), tree_summary(recursive counts), tree_bytes(recursive size), stat(kind), exists(path), remove_path(auto), rmdir, recursive tree delete (core/fuse over metadata primitives)
+- File operations include write/read/read_all/write_if_missing/write_if_version/compare_and_swap_file/write_if_hash/write_if_size/write_if_exists/write_if_empty/write_if_not_empty/write_if_starts_with/write_if_ends_with/write_if_contains/write_if_not_contains/write_if_exact/write_if_not_exact/write_if_min_size/write_if_max_size/write_if_size_between/write_if_size_not_between/write_if_size_multiple_of/write_if_size_not_multiple_of/write_if_size_odd/write_if_size_even/write_if_size_power_of_two/write_if_size_not_power_of_two/write_if_size_prime/write_if_size_not_prime/write_if_size_fibonacci/write_if_size_not_fibonacci/write_if_size_square/write_if_size_not_square/write_if_size_cube/write_if_size_not_cube/write_if_size_triangular/write_if_size_not_triangular/write_if_size_factorial/write_if_size_not_factorial/write_if_size_composite/write_if_size_not_composite/write_if_size_perfect/write_if_size_not_perfect/write_if_size_abundant/write_if_size_not_abundant/write_if_size_deficient/write_if_size_not_deficient/write_if_size_semiprime/write_if_size_not_semiprime/write_if_size_palindrome/write_if_size_not_palindrome/write_if_size_armstrong/write_if_size_not_armstrong/write_if_size_happy/write_if_size_not_happy/write_if_size_automorphic/write_if_size_not_automorphic/write_if_size_harshad/write_if_size_not_harshad/write_if_size_kaprekar/write_if_size_not_kaprekar/write_if_size_repdigit/write_if_size_not_repdigit/write_if_size_tribonacci/write_if_size_not_tribonacci/write_if_size_pell/write_if_size_not_pell/write_if_size_lucas/write_if_size_not_lucas/write_if_size_mersenne/write_if_size_not_mersenne/write_if_size_power_of_three/write_if_size_not_power_of_three/write_if_size_power_of_four/write_if_size_not_power_of_four/write_if_size_power_of_five/write_if_size_not_power_of_five/write_if_size_power_of_six/write_if_size_not_power_of_six/write_if_size_power_of_seven/write_if_size_not_power_of_seven/write_if_size_power_of_eight/write_if_size_not_power_of_eight/write_if_size_power_of_nine/write_if_size_not_power_of_nine/write_if_size_power_of_ten/write_if_size_not_power_of_ten/write_if_size_power_of_eleven/write_if_size_not_power_of_eleven/write_if_size_power_of_twelve/write_if_size_not_power_of_twelve/write_if_size_power_of_thirteen/write_if_size_not_power_of_thirteen/write_if_size_power_of_fourteen/write_if_size_not_power_of_fourteen/write_if_size_power_of_fifteen/write_if_size_not_power_of_fifteen/write_if_size_power_of_sixteen/write_if_size_not_power_of_sixteen/write_if_size_power_of_seventeen/write_if_size_not_power_of_seventeen/write_if_size_power_of_eighteen/write_if_size_not_power_of_eighteen/write_if_size_power_of_nineteen/write_if_size_not_power_of_nineteen/write_if_size_power_of_twenty/write_if_size_not_power_of_twenty/write_if_size_power_of_twenty_one/write_if_size_not_power_of_twenty_one/write_if_size_power_of_twenty_two/write_if_size_not_power_of_twenty_two/write_if_size_power_of_twenty_three/write_if_size_not_power_of_twenty_three/write_if_size_power_of_twenty_four/write_if_size_not_power_of_twenty_four/write_if_size_power_of_twenty_five/write_if_size_not_power_of_twenty_five/write_if_size_power_of_twenty_six/write_if_size_not_power_of_twenty_six/write_if_size_power_of_twenty_seven/write_if_size_not_power_of_twenty_seven/write_if_size_power_of_twenty_eight/write_if_size_not_power_of_twenty_eight/write_if_size_power_of_twenty_nine/write_if_size_not_power_of_twenty_nine/write_if_size_power_of_thirty/write_if_size_not_power_of_thirty/write_if_size_power_of_thirty_one/write_if_size_not_power_of_thirty_one/write_if_size_power_of_thirty_two/write_if_size_not_power_of_thirty_two/write_if_size_power_of_thirty_three/write_if_size_not_power_of_thirty_three/write_if_size_power_of_thirty_four/write_if_size_not_power_of_thirty_four/write_if_size_power_of_thirty_five/write_if_size_not_power_of_thirty_five/write_if_size_power_of_thirty_six/write_if_size_not_power_of_thirty_six/write_if_size_power_of_thirty_seven/write_if_size_not_power_of_thirty_seven/write_if_size_power_of_thirty_eight/write_if_size_not_power_of_thirty_eight/write_if_size_power_of_thirty_nine/write_if_size_not_power_of_thirty_nine/ensure_file, copy_file/touch_file/truncate_file/append_file/overwrite_range/insert_range/delete_range/replace_range conveniences, and file_size/file_hash introspection in core/fuse.
+- Immutable chunk object store with hash identity (chunk_store)
+- Two-tier memory cache plus optional persistent warm-tier cache (cache)
+- Staging lifecycle with in-memory and on-disk implementations (staging)
+- GC candidate scan + orphan deletion + periodic scheduler (gc)
+- Core orchestration with startup mount gate and background worker hooks (`enqueue_gc_scan`, `run_background_once`, `gc_scan_once`, optional periodic scheduler startup helper, and `is_mount_open`) (core)
+- FUSE-like API and in-process daemon request loop (fuse), including mount-gate visibility (`is_mount_open`), manual GC enqueue (`enqueue_gc_scan`), one-shot GC enqueue+drain (`gc_scan_once`), and pass-through manual GC worker drain (`run_background_once`)
+- FUSE daemon pending-request saturation guard (bounded in-process backlog, configurable cap)
+- Daemon health/liveness probe interface for in-process worker (fuse)
 
-## Write/Create File
-WRITE FLOW (STREAMING MODEL)
+## Read File (Current)
+1. Request arrives through FuseApi or FuseDaemon.
+2. Path is canonicalized.
+3. Core checks mount gate (must be open after startup recovery).
+4. Metadata read returns committed chunk list/version.
+5. Cache lookup: L1 then warm tier.
+6. On miss, chunks are read from object store.
+7. Chunk hash is validated before cache fill.
+8. Bytes are assembled and range-sliced for response.
 
-FUSE receives write blocks (4KB–128KB)
-↓
-Streaming chunk buffer (per open file handle)
-↓
-Accumulate into fixed-size chunks (e.g. 4MB)
-↓
-Each chunk:
-    → BLAKE3 hash
-    → immediately stored in object store
-    → chunk ID recorded in transaction log
-↓
-WAL updated incrementally
-↓
-On file close:
-    → finalize redirect object version
-    → atomic CAS commit
+## Write/Create File (Current)
+1. Request arrives with expected metadata version.
+2. Core opens staging slot (optional staging manager).
+3. Pipeline streams bytes into fixed-size chunks.
+4. Each chunk ID is BLAKE3(content); chunk persisted immutable.
+5. WAL records pending transaction and chunk refs.
+6. Metadata commit uses CAS expected_version check.
+7. WAL commit marker is appended.
+8. Core post-commit: staging cleanup + cache invalidate(path).
 
-## Startup Recovery
+## Delete File (Current)
+1. Request arrives with expected metadata version.
+2. Core verifies file exists and is not a directory target for unlink_checked.
+3. WAL begin delete transaction.
+4. Metadata tombstone commit with CAS.
+5. WAL commit marker.
+6. Cache invalidate(path) and GC enqueue (best effort).
 
-boot system
-↓
-read WAL
-↓
-find incomplete TXNs
-↓
-validate chunks (hash check)
-↓
-rollback or repair redirects
-↓
-mark orphan objects
-↓
-restore filesystem state
-↓
-activate system
+## Namespace Rules (Current)
+- mkdir(path): parent directory must exist.
+- readdir(path): directory must exist, else not found.
+- rmdir(path): only empty directory can be removed.
+- rmdir/rmtree on file path: rejected as conflict (path-type mismatch).
+- write(path): parent directory must exist and path must not be a directory.
+- mkdir(path): path must not be an existing live file.
+- unlink(path): directory path is rejected as conflict.
 
-## Garbage System
-GARBAGE COLLECTION (TWO PHASE)
+## Startup Recovery (Current)
+1. WAL scanned in append order by latest tx state.
+2. Committed writes are validated and replayed into metadata.
+3. Pending transactions are marked aborted.
+4. Cache invalidate_all.
+5. Staging purges stale slots (uncommitted first, then any leftover committed slots).
+6. Mount gate opens only after successful recovery.
 
-PHASE 1: ORPHAN DETECTION
-- scan chunks
-- check references from active redirect versions
-- mark unreferenced chunks as ORPHAN
+## GC Model (Current)
+- Trigger enqueue is non-blocking.
+- Trigger enqueue backlog is bounded (default max pending scans = 64) to avoid unbounded queue growth under churn.
+- Demo/runtime knobs can tune that queue bound where GC builder wiring is exposed.
+- Worker scans all chunks and removes orphan candidates.
+- Inflight WAL refs are protected from deletion.
+- Retention window delays deletion of newly orphaned chunks.
+- Optional per-sweep delete budget limits deletion burst size.
+- Periodic scheduler can run trigger + worker loop.
+- Demo runtime can switch basic flow from one-shot GC drain to periodic scheduler mode via env knob.
 
-PHASE 2: VERSION PRUNING
-- delete old redirect versions based on policy:
-    • keep last N versions OR
-    • time-based retention (e.g. 30 days)
-- after pruning → more chunks become orphaned
-- GC safely deletes orphaned chunks after delay
+## Failure Mapping (Current)
+- CAS mismatch -> conflict/busy.
+- Missing parent directory -> not found.
+- Directory not empty on rmdir -> conflict/not empty.
+- Recovery error -> mount remains closed.
+- Integrity mismatch -> IO/integrity error.
 
-## Concurrency Model
-READ:
-→ lock-free (mostly)
-→ uses version snapshot
+## Concurrency Model (Current)
+- Metadata writes are optimistic CAS.
+- Delete has bounded retry with backoff on CAS conflicts.
+- Read path is lock-light except shared cache metadata/state.
+- GC is background and best-effort relative to foreground correctness.
 
-WRITE:
-→ optimistic concurrency
-→ WAL transaction
-→ versioned redirect update
-
-DELETE:
-→ logical delete + version bump
-
-GC:
-→ background, read-only scans
-
-## Scaling Model
-1GB
--single machine
--simple metadata
--fast local reads
-1TB
--caching matters
--chunking required
-10TB
--indexing + compaction + parallel IO
--100TB
--distributed system
--sharding + replication
--multi-node cache + storage layers
-
-## Concurrency Control
-CONCURRENCY CONTROL
-
-- System uses optimistic concurrency + CAS
-- Every redirect object has a version number
-- Commit rule:
-
-  IF current_version != expected_version:
-      → abort or retry
-  ELSE:
-      → allow atomic commit
-
-- Prevents silent overwrite from concurrent writes
+## Current Limitations (Intentional for demo)
+- No kernel FUSE mount/syscall integration yet; current fuse crate is API + daemon loop.
+- No distributed storage/sharding.
+- No production observability stack.

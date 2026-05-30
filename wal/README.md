@@ -18,3 +18,8 @@ Each append operation writes one frame:
 3. `32-byte BLAKE3(payload)` checksum
 
 Corrupt or truncated tails are detected at startup and truncated to last valid frame boundary.
+
+## Durability Modes
+
+- `WalLog::open(path)`: default `sync_data()` on each append (existing behavior).
+- `WalLog::open_with_sync(path, false)`: buffered append mode without per-append fsync.

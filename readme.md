@@ -11,6 +11,73 @@ It combines:
 - Garbage collection system
 - Multi-layer caching and indexing
 
+## Demo Run (Current Repo)
+
+This repo includes a runnable demo for the implemented Rust modules:
+
+```bash
+./scripts/demo.sh
+cargo run -p fs_core --example basic_demo
+cargo run -p fs_core --example restart_recovery_demo
+cargo run -p fs_core --example sqlite_metadata_demo
+cargo run -p fs_core --example persistent_cache_demo
+cargo run -p fuse --example fuse_api_demo
+cargo run -p fuse --example fuse_daemon_demo
+```
+
+For implemented-vs-deferred scope, see `DEMO_STATUS.md`.
+
+WAL durability mode in demos is configurable via environment variable:
+
+```bash
+# default (strict durability)
+WAL_SYNC_WRITES=true ./scripts/demo.sh
+
+# buffered append mode (no per-append fsync)
+WAL_SYNC_WRITES=false ./scripts/demo.sh
+```
+
+Additional demo runtime knobs:
+
+```bash
+DEMO_QUICK_MODE=true ./scripts/demo.sh    # fast path: runs basic + fuse demos only
+DEMO_LIST=true ./scripts/demo.sh          # list available demo targets and exit
+DEMO_SUMMARY_JSON=true ./scripts/demo.sh  # emit machine-readable run summary at the end
+DEMO_SUMMARY_JSON=true DEMO_SUMMARY_JSON_PATH=./demo-summary.json ./scripts/demo.sh
+DEMO_ONLY=fuse_daemon ./scripts/demo.sh   # run exactly one demo target
+DEMO_ONLY=basic ./scripts/demo.sh
+DEMO_ONLY=all ./scripts/demo.sh           # explicit alias for normal multi-demo flow
+CHUNK_SIZE_BYTES=8 ./scripts/demo.sh      # pipeline chunk size for demos (default per example)
+GC_RETENTION_MS=100 ./scripts/demo.sh     # GC orphan retention window for GC-enabled demos
+GC_DELETE_BUDGET=2 ./scripts/demo.sh      # max deletes per GC sweep for GC-enabled demos
+GC_DELETE_BUDGET=none ./scripts/demo.sh   # disable per-sweep cap
+GC_MAX_ENQUEUED_SCANS=16 ./scripts/demo.sh # max queued GC scans before enqueue drops
+GC_SCHEDULER_INTERVAL_MS=10 ./scripts/demo.sh # run periodic GC scheduler in GC-enabled core demos
+GC_SCHEDULER_WAIT_MS=60 ./scripts/demo.sh     # wait window before scheduler metrics snapshot
+FUSE_DAEMON_REQUEST_TIMEOUT_MS=250 ./scripts/demo.sh  # request timeout for fuse_daemon_demo
+FUSE_DAEMON_REQUEST_TIMEOUT_MS=off ./scripts/demo.sh  # disable timeout (default)
+FUSE_DAEMON_MAX_PENDING_REQUESTS=256 ./scripts/demo.sh  # bound in-process daemon pending request backlog
+FUSE_TIMEOUT_SMOKE=true FUSE_DAEMON_REQUEST_TIMEOUT_MS=25 ./scripts/demo.sh
+FUSE_TIMEOUT_SMOKE=true FUSE_DAEMON_REQUEST_TIMEOUT_MS=25 FUSE_TIMEOUT_SMOKE_DELAY_MS=80 ./scripts/demo.sh
+FUSE_TIMEOUT_SMOKE=true FUSE_TIMEOUT_SMOKE_EXPECT_TIMEOUT=true \
+FUSE_DAEMON_REQUEST_TIMEOUT_MS=25 FUSE_TIMEOUT_SMOKE_DELAY_MS=80 ./scripts/demo.sh
+FUSE_TIMEOUT_SMOKE_NEGATIVE_CHECK=true ./scripts/demo.sh
+# smoke behavior:
+# - fuse_api_demo: delayed health probe
+# - fuse_daemon_demo: delayed health probe with timeout mapping demonstration
+# - daemon queue pressure is bounded by FUSE_DAEMON_MAX_PENDING_REQUESTS (default 1024)
+# - with FUSE_TIMEOUT_SMOKE_EXPECT_TIMEOUT=true, daemon smoke fails if timeout is not observed
+#   (requires timeout < delay and FUSE_DAEMON_REQUEST_TIMEOUT_MS configured)
+# - FUSE_TIMEOUT_SMOKE_NEGATIVE_CHECK=true runs an additional expected-failure check
+#   proving strict timeout-smoke validation rejects missing daemon timeout config
+# - DEMO_QUICK_MODE=true skips restart/sqlite/persistent cache demos for quicker iteration
+# - DEMO_ONLY supports: all, basic, restart, sqlite, cache, fuse_api, fuse_daemon
+# - DEMO_SUMMARY_JSON=true prints a JSON-style summary line (ran targets + key mode flags)
+# - DEMO_SUMMARY_JSON_PATH writes that same JSON summary to a file path
+# - summary JSON fields include: ran_targets, negative_timeout_smoke_check, quick_mode,
+#   demo_only, demo_list, wal_sync_writes
+```
+
 ---
 
 # 🚀 What Problem This Solves

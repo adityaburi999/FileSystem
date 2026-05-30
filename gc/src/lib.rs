@@ -1,9 +1,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use wal::TxStatus;
+
+const DEFAULT_MAX_ENQUEUED_SCANS: usize = 64;
 
 #[derive(Debug, Error)]
 pub enum GcError {
@@ -44,6 +48,130 @@ pub trait GcWorker: Send + Sync {
     fn run_enqueued_once(&self) -> Result<Vec<GcReport>, String>;
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct GcSchedulerMetrics {
+    pub ticks: usize,
+    pub trigger_errors: usize,
+    pub worker_errors: usize,
+    pub worker_runs: usize,
+    pub deleted: usize,
+    pub deferred: usize,
+}
+
+#[derive(Default)]
+struct SchedulerCounters {
+    ticks: AtomicUsize,
+    trigger_errors: AtomicUsize,
+    worker_errors: AtomicUsize,
+    worker_runs: AtomicUsize,
+    deleted: AtomicUsize,
+    deferred: AtomicUsize,
+}
+
+pub struct BackgroundGcScheduler {
+    trigger: Arc<dyn GcTrigger>,
+    worker: Arc<dyn GcWorker>,
+    interval: Duration,
+    stop: Arc<AtomicBool>,
+    counters: Arc<SchedulerCounters>,
+    thread: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl BackgroundGcScheduler {
+    pub fn new(trigger: Arc<dyn GcTrigger>, worker: Arc<dyn GcWorker>, interval: Duration) -> Self {
+        Self {
+            trigger,
+            worker,
+            interval: interval.max(Duration::from_millis(1)),
+            stop: Arc::new(AtomicBool::new(false)),
+            counters: Arc::new(SchedulerCounters::default()),
+            thread: Mutex::new(None),
+        }
+    }
+
+    pub fn start(&self) -> Result<(), String> {
+        let mut slot = self.thread.lock().map_err(|_| "gc scheduler lock poisoned".to_string())?;
+        if slot.is_some() {
+            return Err("gc scheduler already running".to_string());
+        }
+
+        self.stop.store(false, Ordering::Release);
+        let stop = Arc::clone(&self.stop);
+        let trigger = Arc::clone(&self.trigger);
+        let worker = Arc::clone(&self.worker);
+        let counters = Arc::clone(&self.counters);
+        let interval = self.interval;
+        *slot = Some(thread::spawn(move || loop {
+            thread::sleep(interval);
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
+
+            counters.ticks.fetch_add(1, Ordering::SeqCst);
+            if trigger.enqueue_candidate_scan().is_err() {
+                counters.trigger_errors.fetch_add(1, Ordering::SeqCst);
+                continue;
+            }
+
+            match worker.run_enqueued_once() {
+                Ok(reports) => {
+                    let runs = reports.len();
+                    let mut deleted = 0;
+                    let mut deferred = 0;
+                    for report in reports {
+                        deleted += report.deleted;
+                        deferred += report.deferred;
+                    }
+                    counters.worker_runs.fetch_add(runs, Ordering::SeqCst);
+                    counters.deleted.fetch_add(deleted, Ordering::SeqCst);
+                    counters.deferred.fetch_add(deferred, Ordering::SeqCst);
+                }
+                Err(_) => {
+                    counters.worker_errors.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }));
+        Ok(())
+    }
+
+    pub fn stop(&self) -> Result<(), String> {
+        self.stop.store(true, Ordering::Release);
+        let handle = self
+            .thread
+            .lock()
+            .map_err(|_| "gc scheduler lock poisoned".to_string())?
+            .take();
+        if let Some(handle) = handle {
+            handle
+                .join()
+                .map_err(|_| "gc scheduler worker panicked".to_string())?;
+        }
+        self.stop.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn metrics(&self) -> Result<GcSchedulerMetrics, String> {
+        let _lock = self
+            .thread
+            .lock()
+            .map_err(|_| "gc scheduler lock poisoned".to_string())?;
+        Ok(GcSchedulerMetrics {
+            ticks: self.counters.ticks.load(Ordering::SeqCst),
+            trigger_errors: self.counters.trigger_errors.load(Ordering::SeqCst),
+            worker_errors: self.counters.worker_errors.load(Ordering::SeqCst),
+            worker_runs: self.counters.worker_runs.load(Ordering::SeqCst),
+            deleted: self.counters.deleted.load(Ordering::SeqCst),
+            deferred: self.counters.deferred.load(Ordering::SeqCst),
+        })
+    }
+}
+
+impl Drop for BackgroundGcScheduler {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GcAuditRecord {
     pub timestamp: SystemTime,
@@ -68,7 +196,10 @@ where
     inflight_source: I,
     store: S,
     retention: Duration,
+    delete_budget: Option<usize>,
+    max_enqueued_scans: usize,
     enqueued_scans: AtomicUsize,
+    dropped_enqueues: AtomicUsize,
     orphan_first_seen: Mutex<HashMap<String, SystemTime>>,
     audit_log: Mutex<Vec<GcAuditRecord>>,
 }
@@ -85,10 +216,31 @@ where
             inflight_source,
             store,
             retention,
+            delete_budget: None,
+            max_enqueued_scans: DEFAULT_MAX_ENQUEUED_SCANS,
             enqueued_scans: AtomicUsize::new(0),
+            dropped_enqueues: AtomicUsize::new(0),
             orphan_first_seen: Mutex::new(HashMap::new()),
             audit_log: Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn with_delete_budget(mut self, max_deletes_per_sweep: usize) -> Self {
+        self.delete_budget = Some(max_deletes_per_sweep.max(1));
+        self
+    }
+
+    pub fn with_max_enqueued_scans(mut self, max_enqueued_scans: usize) -> Self {
+        self.max_enqueued_scans = max_enqueued_scans.max(1);
+        self
+    }
+
+    pub fn enqueued_scan_depth(&self) -> usize {
+        self.enqueued_scans.load(Ordering::SeqCst)
+    }
+
+    pub fn dropped_enqueues(&self) -> usize {
+        self.dropped_enqueues.load(Ordering::SeqCst)
     }
 
     pub fn run_enqueued(&self) -> Result<Vec<GcReport>, GcError> {
@@ -140,7 +292,14 @@ where
         let mut deleted = 0;
         let mut deferred = 0;
 
-        for chunk_id in &candidates {
+        for (idx, chunk_id) in candidates.iter().enumerate() {
+            if let Some(limit) = self.delete_budget {
+                if deleted >= limit {
+                    deferred += candidates.len().saturating_sub(idx);
+                    break;
+                }
+            }
+
             // Revalidate right before deletion.
             let live_refs = self.live_source.live_chunk_ids().map_err(GcError::LiveRef)?;
             let inflight_refs = self
@@ -195,9 +354,23 @@ where
     S: ChunkInventory,
 {
     fn enqueue_candidate_scan(&self) -> Result<(), String> {
-        // Non-blocking foreground hook: enqueue background GC work.
-        self.enqueued_scans.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        // Non-blocking foreground hook: enqueue bounded background GC work.
+        let mut queued = self.enqueued_scans.load(Ordering::Acquire);
+        loop {
+            if queued >= self.max_enqueued_scans {
+                self.dropped_enqueues.fetch_add(1, Ordering::SeqCst);
+                return Ok(());
+            }
+            match self.enqueued_scans.compare_exchange_weak(
+                queued,
+                queued + 1,
+                Ordering::SeqCst,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(observed) => queued = observed,
+            }
+        }
     }
 }
 
@@ -219,6 +392,12 @@ impl LiveRefSource for metadata::InMemoryMetadataHook {
 }
 
 impl LiveRefSource for metadata::FileBackedMetadataHook {
+    fn live_chunk_ids(&self) -> Result<HashSet<String>, String> {
+        self.all_live_chunk_ids().map_err(|e| e.to_string())
+    }
+}
+
+impl LiveRefSource for metadata::SqliteMetadataHook {
     fn live_chunk_ids(&self) -> Result<HashSet<String>, String> {
         self.all_live_chunk_ids().map_err(|e| e.to_string())
     }
@@ -264,7 +443,10 @@ impl ChunkInventory for chunk_store::FsChunkStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::thread;
 
     struct Live {
         refs: Mutex<HashSet<String>>,
@@ -346,16 +528,157 @@ mod tests {
 
         gc.enqueue_candidate_scan().expect("enqueue should succeed");
         // No worker run yet; chunk remains present.
-        assert_eq!(
-            gc.store
-                .all_chunk_ids()
-                .expect("inventory should work")
-                .len(),
-            1
-        );
+        assert_eq!(gc.store.all_chunk_ids().expect("inventory should work").len(), 1);
 
         let reports = gc.run_enqueued().expect("worker should run");
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].deleted, 1);
+    }
+
+    #[test]
+    fn delete_budget_limits_deletes_per_sweep() {
+        let live = Live {
+            refs: Mutex::new(HashSet::new()),
+        };
+        let inflight = Inflight {
+            refs: Mutex::new(HashSet::new()),
+        };
+        let store = Store {
+            chunks: Mutex::new(HashSet::from([
+                "c1".to_string(),
+                "c2".to_string(),
+                "c3".to_string(),
+            ])),
+        };
+
+        let gc = GarbageCollector::new(live, inflight, store, Duration::from_secs(0))
+            .with_delete_budget(1);
+        let report = gc.sweep_once().expect("sweep should succeed");
+        assert_eq!(report.candidates, 3);
+        assert_eq!(report.deleted, 1);
+        assert_eq!(report.deferred, 2);
+
+        let report2 = gc.sweep_once().expect("second sweep should succeed");
+        assert_eq!(report2.deleted, 1);
+        assert_eq!(report2.deferred, 1);
+
+        let report3 = gc.sweep_once().expect("third sweep should succeed");
+        assert_eq!(report3.deleted, 1);
+        assert_eq!(report3.deferred, 0);
+    }
+
+    #[test]
+    fn enqueue_is_bounded_by_max_pending_and_counts_drops() {
+        let live = Live {
+            refs: Mutex::new(HashSet::new()),
+        };
+        let inflight = Inflight {
+            refs: Mutex::new(HashSet::new()),
+        };
+        let store = Store {
+            chunks: Mutex::new(HashSet::from(["c1".to_string(), "c2".to_string()])),
+        };
+        let gc = GarbageCollector::new(live, inflight, store, Duration::from_secs(0))
+            .with_max_enqueued_scans(2);
+
+        for _ in 0..5 {
+            gc.enqueue_candidate_scan().expect("enqueue should not fail");
+        }
+
+        assert_eq!(gc.enqueued_scan_depth(), 2);
+        assert_eq!(gc.dropped_enqueues(), 3);
+
+        let reports = gc.run_enqueued().expect("worker should run queued scans");
+        assert_eq!(reports.len(), 2);
+        assert_eq!(gc.enqueued_scan_depth(), 0);
+    }
+
+    struct CountingTrigger {
+        calls: AtomicUsize,
+    }
+
+    impl CountingTrigger {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl GcTrigger for CountingTrigger {
+        fn enqueue_candidate_scan(&self) -> Result<(), String> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct CountingWorker {
+        calls: AtomicUsize,
+    }
+
+    impl CountingWorker {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl GcWorker for CountingWorker {
+        fn run_enqueued_once(&self) -> Result<Vec<GcReport>, String> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(vec![GcReport {
+                candidates: 2,
+                deleted: 1,
+                deferred: 1,
+            }])
+        }
+    }
+
+    #[test]
+    fn scheduler_runs_trigger_and_worker_periodically() {
+        let trigger = Arc::new(CountingTrigger::new());
+        let worker = Arc::new(CountingWorker::new());
+        let trigger_dyn: Arc<dyn GcTrigger> = trigger.clone();
+        let worker_dyn: Arc<dyn GcWorker> = worker.clone();
+        let scheduler = BackgroundGcScheduler::new(trigger_dyn, worker_dyn, Duration::from_millis(5));
+        scheduler.start().expect("scheduler should start");
+
+        for _ in 0..40 {
+            if worker.calls.load(AtomicOrdering::SeqCst) >= 2 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        scheduler.stop().expect("scheduler should stop");
+
+        let trigger_calls = trigger.calls.load(AtomicOrdering::SeqCst);
+        let worker_calls = worker.calls.load(AtomicOrdering::SeqCst);
+        assert!(trigger_calls >= 2, "expected periodic trigger calls");
+        assert!(worker_calls >= 2, "expected periodic worker calls");
+
+        let metrics = scheduler.metrics().expect("metrics should be readable");
+        assert!(metrics.ticks >= 2);
+        assert_eq!(metrics.trigger_errors, 0);
+        assert_eq!(metrics.worker_errors, 0);
+        assert!(metrics.worker_runs >= 2);
+        assert!(metrics.deleted >= 2);
+        assert!(metrics.deferred >= 2);
+    }
+
+    #[test]
+    fn scheduler_start_rejects_duplicate_running_loop() {
+        let trigger = Arc::new(CountingTrigger::new());
+        let worker = Arc::new(CountingWorker::new());
+        let trigger_dyn: Arc<dyn GcTrigger> = trigger;
+        let worker_dyn: Arc<dyn GcWorker> = worker;
+        let scheduler = BackgroundGcScheduler::new(trigger_dyn, worker_dyn, Duration::from_millis(10));
+        scheduler.start().expect("scheduler should start");
+        let err = scheduler
+            .start()
+            .expect_err("scheduler should reject duplicate start");
+        assert!(err.contains("already running"));
+        scheduler.stop().expect("scheduler should stop");
     }
 }

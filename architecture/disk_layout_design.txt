@@ -1,105 +1,84 @@
-💽 DISK LAYOUT DESIGN
+DISK LAYOUT DESIGN (CURRENT DEMO)
 ========================================================
 /storage_root
 ========================================================
 
 /wal/
-    segment_0001.log
-    segment_0002.log
-    ...
-→ Append-only write-ahead logs
-→ Used for crash recovery
-→ Never modified, only appended
+    wal.log
+- Append-only WAL file
+- Source of truth for transaction replay on restart
 
 ========================================================
 /metadata/
 ========================================================
 
+Option A (file-backed metadata backend):
 /metadata/
-    /dir/
-        dir_ab12.meta
-        dir_c91f.meta
-    /files/
-        file_fa82c1.v1.meta
-        file_fa82c1.v2.meta
+    metadata.json
 
-→ Stores:
-   - redirect objects (file metadata)
-   - directory objects (folder structure)
-   - versioned file state
+Option B (sqlite metadata backend):
+/metadata/
+    metadata.db
+    metadata.db-wal
+    metadata.db-shm
 
-→ Sharded by object_id prefix
-→ Immutable metadata versions
+- Stores file state (version, chunk refs, tombstone)
+- Stores namespace directories for mkdir/readdir/rmdir
+- Stores applied transaction IDs for idempotent replay
 
 ========================================================
 /objects/
 ========================================================
 
 /objects/
-    /ab/
-        /cd/
-            3fa9c1b2.chunk
-            91b2ff10.chunk
+    <chunk-id>.chunk (or sharded form by backend)
 
-→ Immutable chunk storage
-→ Content-addressed (BLAKE3 hash-based naming)
-→ Deduplicated storage layer
-→ Never overwritten
+- Immutable content-addressed chunks
+- Chunk ID is BLAKE3 hash of content
+- Never overwritten in place
 
 ========================================================
 /cache/
 ========================================================
 
-/cache/
-    /ram/
-    /ssd/
-    /reconstructed/
+In-memory mode:
+- L1 + L2 both in memory
 
-→ Temporary performance layer
-→ Stores hot chunks and reconstructed files
-→ Fully disposable (can be wiped anytime)
+Persistent warm-tier mode:
+/cache/
+    <fingerprint>.json
+
+- Warm tier entries persisted on disk
+- Reloaded on process restart
+- Path invalidation and full invalidation supported
 
 ========================================================
 /staging/
 ========================================================
 
 /staging/
-    txn_001/
-        buffer.tmp
-        chunks.tmp
-        redirect.tmp
+    <tx-id>/
+        slot.meta
 
-→ Temporary write area
-→ Holds incomplete writes
-→ NOT visible to filesystem
-→ Deleted on crash or commit
+- Per-transaction temporary write slot
+- Marks committed vs uncommitted
+- Startup purge removes stale uncommitted slots
 
 ========================================================
 /system/
 ========================================================
 
-/system/
-    /gc/
-    /snapshots/
-    /index/
-    /state/
-
-→ Internal engine data
-→ WAL checkpoints
-→ GC state tracking
-→ Indexing structures
-
-→ Hidden from user filesystem (FUSE restriction)
+/system/gc/
+- Scheduler state and worker lifecycle owned in process memory
+- Optional persisted files can be added later
 
 ========================================================
-KEY DESIGN RULES
+KEY RULES (CURRENT)
 ========================================================
 
-1. WAL = append-only truth log
-2. metadata = versioned filesystem state
-3. objects = immutable data chunks
-4. cache = disposable acceleration layer
-5. staging = crash-safe temporary workspace
-6. system = internal engine (not user accessible)
-
-========================================================
+1. WAL remains append-only and replayable.
+2. Metadata is authority for visible namespace + file versions.
+3. Objects are immutable by chunk ID.
+4. Cache is performance layer; warm-tier persistence is optional.
+5. Staging is never visible to namespace reads.
+6. Mount opens only after successful recovery.

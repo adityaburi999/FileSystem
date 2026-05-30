@@ -13,6 +13,7 @@ const MAX_WAL_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
 
 pub struct WalLog {
     file: Mutex<File>,
+    sync_writes: bool,
     active_transactions: Mutex<HashSet<String>>,
     finalized_transactions: Mutex<HashSet<String>>,
     requires_repair: AtomicBool,
@@ -24,6 +25,10 @@ pub struct WalTransaction {
 
 impl WalLog {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, WalError> {
+        WalLog::open_with_sync(path, true)
+    }
+
+    pub fn open_with_sync<P: AsRef<Path>>(path: P, sync_writes: bool) -> Result<Self, WalError> {
         let path_buf = path.as_ref().to_path_buf();
         let file = OpenOptions::new()
             .create(true)
@@ -34,10 +39,15 @@ impl WalLog {
 
         Ok(Self {
             file: Mutex::new(file),
+            sync_writes,
             active_transactions: Mutex::new(active_transactions),
             finalized_transactions: Mutex::new(finalized_transactions),
             requires_repair: AtomicBool::new(requires_repair),
         })
+    }
+
+    pub fn sync_writes_enabled(&self) -> bool {
+        self.sync_writes
     }
 
     pub fn append(&self, entry: &WalEntry) -> Result<(), WalError> {
@@ -57,7 +67,9 @@ impl WalLog {
 
         let mut file = self.file.lock().expect("wal mutex poisoned");
         file.write_all(&frame)?;
-        file.sync_data()?;
+        if self.sync_writes {
+            file.sync_data()?;
+        }
         Ok(())
     }
 
